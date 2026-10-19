@@ -1,0 +1,152 @@
+"""Test di sicurezza dell'add-on agente. Avviare con tests/run_security.sh.
+
+Simula un server dell'installatore ostile (o compromesso) e controlla che l'agente non metta
+a rischio l'Home Assistant del cliente: il pannello gira nell'origine di HA, quindi un XSS
+lì dentro vorrebbe dire accesso completo alla casa.
+"""
+import json
+import os
+import sys
+import tempfile
+import threading
+import time
+import urllib.parse
+import urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+AGENT_DIR = os.path.abspath(os.environ["AGENT_DIR"])
+TMP = tempfile.mkdtemp()
+os.environ.update(DATA_DIR=TMP, PANEL_ALLOW_IPS="127.0.0.1", HA_URL="http://127.0.0.1:1/core/api",
+                  SUPERVISOR_URL="http://127.0.0.1:1", SUPERVISOR_TOKEN="x")
+sys.path.insert(0, AGENT_DIR)
+
+from agent import link as link_mod  # noqa: E402
+from agent.main import Agent  # noqa: E402
+from agent.panel import Panel  # noqa: E402
+
+results = []
+
+
+def check(ok, name, detail=""):
+    results.append((ok, name, detail))
+    print(("OK          " if ok else "VULNERABILE ") + name + (f"  [{detail}]" if detail and not ok else ""))
+
+
+EVIL = '"><img src=x onerror=alert(1)>'
+stolen = []
+mode = {"tickets": "evil"}
+
+
+class Evil(BaseHTTPRequestHandler):
+    def log_message(self, *a):
+        pass
+
+    def _json(self, obj, code=200):
+        body = json.dumps(obj).encode()
+        self.send_response(code); self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
+
+    def do_GET(self):
+        if self.path.startswith("/steal"):
+            stolen.append(self.headers.get("Authorization"))
+            return self._json({"commands": []})
+        if self.path.startswith("/api/agent/commands"):
+            self.send_response(302); self.send_header("Location", f"http://localhost:{PORT}/steal"); self.end_headers(); return
+        if self.path.startswith("/api/agent/tickets"):
+            if mode["tickets"] == "broken":
+                return self._json({"tickets": [{"id": 1, "title": "x"}, "stringa", {"messages": [None]}]})
+            return self._json({"tickets": [{
+                "id": EVIL, "title": EVIL, "status": EVIL, "created_at": EVIL, "updated_at": EVIL,
+                "messages": [{"author_type": EVIL, "author_name": EVIL, "text": EVIL, "created_at": EVIL}]}]})
+        self._json({"error": "?"}, 404)
+
+    def do_POST(self):
+        length = int(self.headers.get("Content-Length") or 0)
+        self.rfile.read(length)
+        if self.path == "/api/agent/pair":
+            return self._json({"plant_id": 1, "token": "segreto-del-cliente", "server_name": EVIL,
+                               "brand_color": "red}</style><script>alert(1)</script>", "protocol": 1})
+        if self.path == "/api/agent/report":
+            return self._json({"ok": True, "pending_commands": 0, "server_name": EVIL, "brand_color": "#fff;x"})
+        self._json({"ok": True})
+
+
+srv = ThreadingHTTPServer(("127.0.0.1", 0), Evil)
+PORT = srv.server_address[1]
+threading.Thread(target=srv.serve_forever, daemon=True).start()
+SERVER = f"http://127.0.0.1:{PORT}"
+
+json.dump({"server_url": SERVER, "pair_code": "ABCD-EFGH"}, open(os.path.join(TMP, "options.json"), "w"))
+agent = Agent()
+agent.link.pair(SERVER, "ABCD-EFGH", "2026.10.1", "Casa")
+try:
+    agent.link.report("2026.10.1", None)
+except Exception:  # noqa: BLE001
+    pass
+agent.state.update(last_diag={"status": EVIL, "collected_at": EVIL, "issues": [{"severity": "critico", "message": EVIL}]})
+panel = Panel(agent, 0)
+
+# ---------------------------------------------------------------- XSS nel pannello
+html = panel.page()
+raw = [frag for frag in ("<img src=x", "<script>alert") if frag in html]
+check(not raw, "pannello: dati di un server ostile non possono eseguire codice nell'Home Assistant del cliente",
+      "trovato nel pannello: " + ", ".join(raw))
+
+mode["tickets"] = "broken"
+try:
+    html = panel.page()
+    crashed = "Le tue richieste" not in html
+except Exception as e:  # noqa: BLE001
+    crashed = f"{type(e).__name__}: {e}"
+check(not crashed, "pannello: risposte malformate del server non lo mandano in errore", str(crashed))
+mode["tickets"] = "evil"
+
+# ---------------------------------------------------------------- reindirizzamenti
+try:
+    agent.link.poll_commands(wait=0)
+except Exception:  # noqa: BLE001
+    pass
+check(not stolen, "agente: il token non viene inviato a un altro indirizzo seguendo un reindirizzamento",
+      f"ricevuto da /steal: {stolen[:1]}")
+
+# ---------------------------------------------------------------- server in chiaro
+def accepts_http(url):
+    """True se l'agente prova davvero a collegarsi a un server http pubblico (token in chiaro su internet)."""
+    try:
+        agent.link.pair(url, "ABCD-EFGH", None, None)
+    except link_mod.ServerError as e:
+        return "https" not in str(e).lower()
+    return True
+check(not accepts_http("http://assistenza.example.invalid"), "agente: rifiuta un server http:// pubblico (token e dati in chiaro)")
+agent.link.pair(SERVER, "ABCD-EFGH", None, None)  # in rete locale l'http resta permesso
+check(agent.state.get("token") == "segreto-del-cliente", "(controllo) in rete locale l'http è ancora ammesso")
+
+# ---------------------------------------------------------------- CSRF sul pannello
+httpd = panel.start()
+pport = httpd.server_address[1]
+agent.state.set_consent(False)
+req = urllib.request.Request(f"http://127.0.0.1:{pport}/consenso", data=urllib.parse.urlencode({"enabled": "1", "durata": "sempre"}).encode(),
+                             method="POST", headers={"Content-Type": "application/x-www-form-urlencoded", "Origin": "https://evil.example"})
+try:
+    urllib.request.urlopen(req, timeout=5)
+except Exception:  # noqa: BLE001
+    pass
+check(not agent.state.get("consent"), "pannello: un altro sito non può riattivare l'accesso remoto al posto del cliente (CSRF)")
+
+req = urllib.request.Request(f"http://127.0.0.1:{pport}/consenso", data=b"enabled=1", method="POST",
+                             headers={"Content-Length": "-1"})
+t0 = time.time()
+try:
+    urllib.request.urlopen(req, timeout=5)
+    hung = False
+except Exception:  # noqa: BLE001
+    hung = time.time() - t0 >= 4.5
+check(not hung, "pannello: Content-Length negativo non blocca il pannello")
+
+html_page = urllib.request.urlopen(f"http://127.0.0.1:{pport}/", timeout=5)
+h = html_page.headers
+check("x-content-type-options" in {k.lower() for k in h.keys()}, "pannello: intestazioni di sicurezza presenti")
+
+bad = [r for r in results if not r[0]]
+print(f"\n{len(results) - len(bad)} difesi, {len(bad)} vulnerabili su {len(results)} controlli")
+sys.exit(1 if bad else 0)

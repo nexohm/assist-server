@@ -9,6 +9,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     SUITE_VERSION=${VERSION} \
     SECURE_COOKIES=1
 
+# Da chi accettare X-Forwarded-For (IP reale del visitatore): solo da reti private, cioè
+# Caddy nello stesso Docker o un reverse proxy nella tua rete. Da internet non si falsifica.
+ENV FORWARDED_ALLOW_IPS="127.0.0.1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
+
 LABEL org.opencontainers.image.title="Server di assistenza Home Assistant" \
       org.opencontainers.image.description="Dashboard per installatori: clienti, impianti, diagnostica e ticket" \
       org.opencontainers.image.version="${VERSION}" \
@@ -31,4 +35,5 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s \
   CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=4)"
 
 # Un solo processo: il long-polling dei comandi tiene lo stato in memoria.
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080", "--proxy-headers", "--forwarded-allow-ips", "*"]
+# --forwarded-allow-ips non è indicato: uvicorn lo legge da FORWARDED_ALLOW_IPS (vedi sopra).
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080", "--proxy-headers", "--no-server-header"]
