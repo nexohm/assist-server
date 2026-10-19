@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block title %}Impostazioni{% endblock %}
+{% block content %}
+<div class="head"><h1>Impostazioni</h1></div>
+<div class="card" style="max-width:560px">
+  <form method="post"><input type="hidden" name="csrf" value="{{ csrf }}">
+    <label for="company_name">Nome dell'azienda</label><input id="company_name" name="company_name" value="{{ company }}" required>
+    <p class="muted small">Compare in questa dashboard e nel pannello Assistenza dei clienti (si aggiorna entro un minuto).</p>
+    <label for="brand_color">Colore del marchio</label><input id="brand_color" type="color" name="brand_color" value="{{ brand_color }}">
+    <p style="margin-top:18px"><button class="btn">Salva</button></p>
+  </form>
+</div>
+{% endblock %}

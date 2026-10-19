@@ -1,0 +1,103 @@
+{% extends "base.html" %}
+{% from "_macros.html" import status_badge, diagnostics %}
+{% block title %}{{ plant.client_name }} · {{ plant.name }}{% endblock %}
+{% block content %}
+<div class="head">
+  <div><p class="muted small" style="margin:0"><a href="/clienti">Clienti</a> / <a href="/clienti/{{ plant.client_id }}">{{ plant.client_name }}</a> /</p>
+    <h1>{{ plant.name }}</h1>
+    <div class="row small"><span id="st">{{ status_badge(plant.status) }}</span>
+      <span class="muted">Ultimo contatto: <span id="seen">{{ plant.last_seen | ago }}</span></span>
+      {% if plant.paired_at and not plant.consent %}<span class="badge s-attenzione">Accesso remoto sospeso dal cliente</span>{% endif %}</div>
+  </div>
+  {% if plant.paired_at and not plant.revoked and can(user, 'commands') %}
+  <div class="row">
+    {% for name, label in ALLOWED_COMMANDS.items() %}
+    <form class="inline" method="post" action="/impianti/{{ plant.id }}/comandi"><input type="hidden" name="csrf" value="{{ csrf }}">
+      <input type="hidden" name="name" value="{{ name }}"><button class="btn {{ 'ghost' if name == 'ping' }}">{{ label }}</button></form>
+    {% endfor %}
+  </div>
+  {% endif %}
+</div>
+
+{% if plant.pair_code and not plant.paired_at %}
+<div class="card" style="margin-bottom:16px">
+  <div class="grid g2" style="align-items:center">
+    <div class="pair"><p class="muted" style="margin:0">Codice di abbinamento</p><div class="code">{{ plant.pair_code }}</div>
+      <p class="muted small" style="margin:0">valido fino al {{ plant.pair_expires | ts }}</p></div>
+    <div>
+      <h2>Come collegare l'impianto</h2>
+      <ol style="margin:0;padding-left:20px">
+        <li>Su Home Assistant del cliente installa l'add-on <b>Agente Assistenza</b>.</li>
+        <li>Nella scheda <i>Configurazione</i> inserisci:<br>
+          indirizzo server: <code>{{ request.base_url }}</code><br>codice: <code>{{ plant.pair_code }}</code></li>
+        <li>Avvia l'add-on: in pochi secondi questa pagina diventa verde.</li>
+      </ol>
+    </div>
+  </div>
+</div>
+{% elif plant.revoked %}
+<div class="card" style="margin-bottom:16px"><p style="margin:0">Accesso revocato. Per ricollegare l'impianto genera un nuovo codice.</p></div>
+{% endif %}
+
+<div class="grid g-side">
+  <div class="stack">
+    <div class="card"><h2>Diagnostica</h2>{{ diagnostics(plant.diag) }}</div>
+    <div class="card">
+      <h2>Comandi recenti</h2>
+      {% if commands %}
+      <table id="cmds"><tr><th>Comando</th><th>Stato</th><th>Da</th><th>Quando</th></tr>
+        {% for c in commands %}<tr data-id="{{ c.id }}"><td>{{ ALLOWED_COMMANDS.get(c.name, c.name) }}</td>
+          <td><span class="badge s-{{ c.status }}">{{ COMMAND_STATUS[c.status] }}</span></td>
+          <td class="small muted">{{ c.username or '—' }}</td><td class="small muted">{{ c.created_at | ago }}</td></tr>{% endfor %}
+      </table>
+      {% else %}<p class="muted">Nessun comando inviato.</p>{% endif %}
+    </div>
+  </div>
+  <div class="stack">
+    <div class="card">
+      <h2>Ticket</h2>
+      {% for t in tickets %}<p style="margin:0 0 10px"><a href="/ticket/{{ t.id }}">{{ t.title }}</a><br>
+        <span class="badge s-{{ t.status }}">{{ TICKET_STATUS[t.status] }}</span> <span class="muted small">{{ t.updated_at | ago }}</span></p>
+      {% else %}<p class="muted">Nessun ticket.</p>{% endfor %}
+    </div>
+    <div class="card">
+      <h2>Informazioni</h2>
+      <dl class="kv"><dt>Home Assistant</dt><dd>{{ plant.ha_version or '—' }}</dd><dt>Agente</dt><dd>{{ plant.agent_version or '—' }}</dd>
+        <dt>Abbinato il</dt><dd>{{ plant.paired_at | ts }}</dd><dt>Creato il</dt><dd>{{ plant.created_at | ts }}</dd></dl>
+      {% if can(user, 'edit') %}
+      <div class="row" style="margin-top:16px">
+        <form class="inline" method="post" action="/impianti/{{ plant.id }}/codice" onsubmit="return confirm('Il collegamento attuale smetterà di funzionare. Continuare?')">
+          <input type="hidden" name="csrf" value="{{ csrf }}"><button class="btn ghost small">Nuovo codice</button></form>
+        {% if not plant.revoked %}
+        <form class="inline" method="post" action="/impianti/{{ plant.id }}/revoca" onsubmit="return confirm('Revocare l\'accesso di questo impianto?')">
+          <input type="hidden" name="csrf" value="{{ csrf }}"><button class="btn danger small">Revoca accesso</button></form>
+        {% endif %}
+      </div>
+      {% endif %}
+    </div>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+// La pagina si aggiorna da sola quando lo stato dell'impianto o dei comandi cambia.
+(function () {
+  const first = {{ {'status': plant.status, 'diag': plant.last_diag_at, 'cmds': commands | map(attribute='status') | list} | tojson }};
+  async function poll() {
+    try {
+      const r = await fetch('/impianti/{{ plant.id }}/stato.json', {credentials: 'same-origin'});
+      if (r.ok) {
+        const s = await r.json();
+        document.getElementById('seen').textContent = s.last_seen;
+        const cmds = s.commands.map(c => c.status);
+        if (s.status !== first.status || s.last_diag_at !== first.diag || JSON.stringify(cmds) !== JSON.stringify(first.cmds)) {
+          location.reload(); return;
+        }
+      }
+    } catch (e) {}
+    setTimeout(poll, 4000);
+  }
+  setTimeout(poll, 4000);
+})();
+</script>
+{% endblock %}

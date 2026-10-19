@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block title %}Accesso{% endblock %}
+{% block content %}
+<div class="auth">
+  <div class="brand">{{ company }}</div>
+  <div class="card">
+    <h1>Accedi</h1>
+    {% if error %}<div class="errors"><p>{{ error }}</p></div>{% endif %}
+    <form method="post" action="/login?next={{ next | urlencode }}">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <label for="username">Nome utente</label>
+      <input id="username" name="username" required autocomplete="username" autofocus>
+      <label for="password">Password</label>
+      <input id="password" type="password" name="password" required autocomplete="current-password">
+      <p style="margin-top:20px"><button class="btn">Accedi</button></p>
+    </form>
+  </div>
+</div>
+{% endblock %}

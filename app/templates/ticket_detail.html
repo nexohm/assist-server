@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% from "_macros.html" import diagnostics %}
+{% block title %}Ticket #{{ t.id }}{% endblock %}
+{% block content %}
+<div class="head"><div><p class="muted small" style="margin:0"><a href="/ticket">Ticket</a> / #{{ t.id }}</p><h1>{{ t.title }}</h1>
+  <div class="row small"><span class="badge s-{{ t.status }}">{{ TICKET_STATUS[t.status] }}</span>
+    <span class="muted">aperto il {{ t.created_at | ts }}</span></div></div></div>
+<div class="grid g-side">
+  <div class="stack">
+    {% for m in messages %}
+    <div class="msg {{ m.author_type }}"><div class="meta">{{ m.author_name }} · {{ m.created_at | ts }}</div><p>{{ m.text }}</p></div>
+    {% else %}<p class="muted">Il cliente non ha aggiunto una descrizione.</p>{% endfor %}
+    {% if can(user, 'edit') %}
+    <div class="card">
+      <form method="post" action="/ticket/{{ t.id }}/rispondi">
+        <input type="hidden" name="csrf" value="{{ csrf }}">
+        <label for="text">Risposta al cliente</label>
+        <textarea id="text" name="text" placeholder="Il cliente la vedrà nel pannello Assistenza di Home Assistant"></textarea>
+        <div class="row" style="margin-top:10px">
+          <div class="grow"><label for="status">Stato</label><select id="status" name="status">
+            {% for k, l in TICKET_STATUS.items() %}<option value="{{ k }}" {{ 'selected' if k == t.status }}>{{ l }}</option>{% endfor %}</select></div>
+          <div class="grow"><label for="assigned_to">Assegnato a</label><select id="assigned_to" name="assigned_to"><option value="">Nessuno</option>
+            {% for u in users %}<option value="{{ u.id }}" {{ 'selected' if u.id == t.assigned_to }}>{{ u.full_name or u.username }}</option>{% endfor %}</select></div>
+        </div>
+        <p style="margin-top:14px"><button class="btn">Invia e aggiorna</button></p>
+      </form>
+    </div>
+    {% endif %}
+  </div>
+  <div class="stack">
+    <div class="card"><h2>Cliente</h2>
+      <dl class="kv"><dt>Cliente</dt><dd><a href="/clienti/{{ t.client_id }}">{{ t.client_name }}</a></dd>
+        <dt>Impianto</dt><dd><a href="/impianti/{{ t.plant_id }}">{{ t.plant_name }}</a></dd>
+        <dt>Recapito</dt><dd>{{ t.contact or t.client_phone or '—' }}</dd>{% if t.client_email %}<dt>Email</dt><dd>{{ t.client_email }}</dd>{% endif %}</dl></div>
+    <div class="card"><h2>Diagnostica all'apertura</h2>{{ diagnostics(t.diag) }}</div>
+  </div>
+</div>
+{% endblock %}

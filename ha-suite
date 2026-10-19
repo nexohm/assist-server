@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+# Comandi di gestione del server di assistenza. Uso: ./ha-suite <comando>
+set -euo pipefail
+cd "$(dirname "$(readlink -f "$0")")"
+
+dc() { docker compose "$@"; }
+
+case "${1:-aiuto}" in
+  stato)
+    dc ps
+    ;;
+  log)
+    dc logs --tail=200 -f suite
+    ;;
+  riavvia)
+    dc up -d
+    ;;
+  aggiorna)
+    echo "Copia di sicurezza prima dell'aggiornamento..."
+    "$0" backup
+    dc pull
+    dc up -d
+    docker image prune -f >/dev/null
+    echo "Aggiornato. Versione in esecuzione:"
+    dc exec -T suite printenv SUITE_VERSION || true
+    ;;
+  backup)
+    mkdir -p backup
+    file="backup/ha-suite-$(date +%Y%m%d-%H%M%S).tar.gz"
+    # Fermo un istante il server per avere un database coerente
+    dc stop suite >/dev/null
+    docker run --rm -v ha-suite_suite_data:/data:ro -v "$PWD/backup:/out" alpine \
+      tar czf "/out/$(basename "$file")" -C /data .
+    dc start suite >/dev/null
+    # tiene solo gli ultimi 14 backup
+    find backup -maxdepth 1 -name 'ha-suite-*.tar.gz' -printf '%T@ %p\n' | sort -rn | tail -n +15 | cut -d' ' -f2- | xargs -r rm --
+    echo "Backup salvato in $file"
+    ;;
+  ripristina)
+    file="${2:?indica il file: ./ha-suite ripristina backup/ha-suite-....tar.gz}"
+    read -rp "Tutti i dati attuali verranno sostituiti con $file. Continuare? [s/N] " ok
+    [[ "${ok,,}" == "s" ]] || exit 1
+    dc stop suite >/dev/null
+    docker run --rm -v ha-suite_suite_data:/data -v "$(readlink -f "$file"):/in.tar.gz:ro" alpine \
+      sh -c 'rm -rf /data/* && tar xzf /in.tar.gz -C /data && chown -R 1000:1000 /data'
+    dc start suite >/dev/null
+    echo "Ripristino completato."
+    ;;
+  disinstalla)
+    read -rp "Rimuovere i container? I dati restano nel volume ha-suite_suite_data. [s/N] " ok
+    [[ "${ok,,}" == "s" ]] && dc down
+    ;;
+  *)
+    cat <<'HELP'
+Uso: ./ha-suite <comando>
+
+  stato        mostra se il server è in funzione
+  log          segue i log del server
+  aggiorna     backup + scarica l'ultima versione + riavvia
+  backup       salva tutti i dati in ./backup (tiene gli ultimi 14)
+  ripristina   ripristina un backup:  ./ha-suite ripristina backup/<file>.tar.gz
+  riavvia      applica modifiche al file .env
+  disinstalla  rimuove i container (i dati restano)
+HELP
+    ;;
+esac

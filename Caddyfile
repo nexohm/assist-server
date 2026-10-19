@@ -1,0 +1,9 @@
+{$DOMAIN} {
+	encode gzip
+	reverse_proxy suite:8080 {
+		# il long-polling dei comandi tiene aperta la richiesta fino a 25 secondi
+		transport http {
+			read_timeout 60s
+		}
+	}
+}

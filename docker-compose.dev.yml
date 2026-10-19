@@ -1,0 +1,10 @@
+# Sviluppo: compila l'immagine dal codice locale invece di scaricarla.
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
+services:
+  suite:
+    build:
+      context: .
+      args:
+        VERSION: dev
+    environment:
+      SECURE_COOKIES: "0"

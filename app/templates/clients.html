@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block title %}Clienti{% endblock %}
+{% block content %}
+<div class="head"><h1>Clienti</h1>{% if can(user, 'edit') %}<a class="btn" href="/clienti/nuovo">+ Nuovo cliente</a>{% endif %}</div>
+<form class="row" style="margin-bottom:14px"><input class="grow" name="q" value="{{ q }}" placeholder="Cerca per nome, email o indirizzo"><button class="btn ghost">Cerca</button></form>
+<div class="card table-wrap">
+  {% if clients %}
+  <table>
+    <tr><th>Nome</th><th>Contatti</th><th>Indirizzo</th><th class="num">Impianti</th></tr>
+    {% for c in clients %}
+    <tr><td><a href="/clienti/{{ c.id }}"><b>{{ c.name }}</b></a></td>
+        <td class="small">{{ c.phone or '' }}{% if c.phone and c.email %}<br>{% endif %}{{ c.email or '' }}</td>
+        <td class="small muted">{{ c.address or '' }}</td><td class="num">{{ c.n_plants }}</td></tr>
+    {% endfor %}
+  </table>
+  {% else %}<div class="empty">Nessun cliente{% if q %} trovato per «{{ q }}»{% endif %}.</div>{% endif %}
+</div>
+{% endblock %}

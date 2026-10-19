@@ -1,0 +1,32 @@
+{% macro status_badge(s) -%}
+{%- set labels = {'ok':'OK','attenzione':'Attenzione','critico':'Critico','offline':'Offline','da_abbinare':'Da abbinare','revocato':'Revocato'} -%}
+<span class="badge s-{{ s }}">{{ labels.get(s, s) }}</span>
+{%- endmacro %}
+
+{% macro diagnostics(d) -%}
+{% if not d %}
+  <p class="muted">Nessuna diagnostica disponibile.</p>
+{% else %}
+  {% set sm = d.summary or {} %}{% set sy = d.system or {} %}
+  <div class="row" style="margin-bottom:12px">{{ status_badge(d.status) }} <span class="muted small">raccolta il {{ d.collected_at | ts }}</span></div>
+  <dl class="kv">
+    <dt>Home Assistant</dt><dd>{{ sy.ha_version or '—' }}{% if sy.os_version %} · OS {{ sy.os_version }}{% endif %}</dd>
+    <dt>Entità</dt><dd>{{ sm.entities }} totali · {{ sm.unavailable }} non disponibili</dd>
+    <dt>Batterie basse</dt><dd>{{ sm.low_battery }}</dd>
+    <dt>Aggiornamenti disponibili</dt><dd>{{ sm.updates }}</dd>
+    <dt>Automazioni spente</dt><dd>{{ sm.automations_off }}</dd>
+    {% if sy.disk_total_gb %}<dt>Disco</dt><dd>{{ sy.disk_used_gb }} / {{ sy.disk_total_gb }} GB</dd>{% endif %}
+    <dt>Ultimo backup</dt><dd>{% if sy.last_backup %}{{ sy.last_backup | ts }} ({{ sy.last_backup_age_days }} g fa){% else %}nessuno trovato{% endif %}</dd>
+  </dl>
+  {% if d.issues %}
+  <h2 style="margin-top:18px">Problemi rilevati</h2>
+  <ul class="issues">
+    {% for i in d.issues %}
+    <li><span class="badge s-{{ i.severity }}">{{ i.severity }}</span> {{ i.message }}
+      {% if i.get('items') %}<details><summary class="small">{% set n = i.get('items') | length %}{{ n }} {{ 'elemento' if n == 1 else 'elementi' }}</summary><p class="items">{{ i.get('items') | join(', ') }}</p></details>{% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+{% endif %}
+{%- endmacro %}

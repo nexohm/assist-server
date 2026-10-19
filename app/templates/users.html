@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block title %}Utenti{% endblock %}
+{% block content %}
+<div class="head"><h1>Utenti</h1></div>
+<div class="grid g-side">
+  <div class="card table-wrap"><table>
+    <tr><th>Utente</th><th>Ruolo</th><th>Stato</th><th></th></tr>
+    {% for u in users %}<tr><td><b>{{ u.full_name or u.username }}</b><br><span class="muted small">{{ u.username }}</span></td>
+      <td>{{ ROLE_LABELS[u.role] }}</td><td>{% if u.active %}<span class="badge s-ok">Attivo</span>{% else %}<span class="badge s-offline">Disattivato</span>{% endif %}</td>
+      <td>{% if u.id != user.id %}<form class="inline" method="post" action="/utenti/{{ u.id }}/attiva"><input type="hidden" name="csrf" value="{{ csrf }}">
+        <button class="btn ghost small">{{ 'Disattiva' if u.active else 'Riattiva' }}</button></form>{% endif %}</td></tr>{% endfor %}
+  </table></div>
+  <div class="card">
+    <h2>Nuovo utente</h2>
+    {% if errors %}<div class="errors">{% for e in errors %}<p>{{ e }}</p>{% endfor %}</div>{% endif %}
+    <form method="post"><input type="hidden" name="csrf" value="{{ csrf }}">
+      <label for="full_name">Nome e cognome</label><input id="full_name" name="full_name">
+      <label for="username">Nome utente</label><input id="username" name="username" required>
+      <label for="password">Password iniziale</label><input id="password" type="password" name="password" required autocomplete="new-password">
+      <label for="role">Ruolo</label><select id="role" name="role">
+        <option value="tecnico">Tecnico — clienti, ticket e comandi</option>
+        <option value="lettura">Sola lettura — consultazione</option>
+        <option value="admin">Amministratore — tutto, compresi utenti e impostazioni</option></select>
+      <p style="margin-top:16px"><button class="btn">Crea utente</button></p>
+    </form>
+  </div>
+</div>
+{% endblock %}

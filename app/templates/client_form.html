@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block title %}{{ 'Modifica cliente' if client.id else 'Nuovo cliente' }}{% endblock %}
+{% block content %}
+<div class="head"><h1>{{ 'Modifica cliente' if client.id else 'Nuovo cliente' }}</h1></div>
+<div class="card" style="max-width:640px">
+  {% if errors %}<div class="errors">{% for e in errors %}<p>{{ e }}</p>{% endfor %}</div>{% endif %}
+  <form method="post">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <label for="name">Nome o ragione sociale</label><input id="name" name="name" required value="{{ client.name or '' }}">
+    <div class="row"><div class="grow"><label for="phone">Telefono</label><input id="phone" name="phone" value="{{ client.phone or '' }}"></div>
+      <div class="grow"><label for="email">Email</label><input id="email" type="email" name="email" value="{{ client.email or '' }}"></div></div>
+    <label for="address">Indirizzo impianto</label><input id="address" name="address" value="{{ client.address or '' }}">
+    <label for="notes">Note interne</label><textarea id="notes" name="notes">{{ client.notes or '' }}</textarea>
+    <p class="row" style="margin-top:18px"><button class="btn">Salva</button>
+      <a class="btn ghost" href="{{ '/clienti/%d' % client.id if client.id else '/clienti' }}">Annulla</a></p>
+  </form>
+</div>
+{% endblock %}

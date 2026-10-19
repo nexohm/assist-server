@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% from "_macros.html" import status_badge %}
+{% block title %}Panoramica{% endblock %}
+{% block content %}
+<div class="head"><div><h1>Panoramica</h1><p class="muted" style="margin:0">Stato di tutti gli impianti in assistenza</p></div>
+  {% if can(user, 'edit') %}<a class="btn" href="/clienti/nuovo">+ Nuovo cliente</a>{% endif %}</div>
+<div class="stats">
+  <div class="stat"><b>{{ plants | length }}</b><span>Impianti</span></div>
+  <div class="stat {{ 'bad' if counts.offline }}"><b>{{ counts.offline }}</b><span>Offline</span></div>
+  <div class="stat {{ 'bad' if counts.critico }}"><b>{{ counts.critico }}</b><span>Critici</span></div>
+  <div class="stat {{ 'warn' if counts.attenzione }}"><b>{{ counts.attenzione }}</b><span>Da controllare</span></div>
+  <div class="stat {{ 'warn' if open_tickets }}"><b>{{ open_tickets | length }}</b><span>Ticket aperti</span></div>
+</div>
+<div class="grid g-side">
+  <div class="card">
+    <h2>Impianti</h2>
+    {% if plants %}
+    <div class="table-wrap"><table>
+      <tr><th>Stato</th><th>Cliente / impianto</th><th>Problemi</th><th>Ultimo contatto</th></tr>
+      {% for p in plants %}
+      <tr>
+        <td>{{ status_badge(p.status) }}</td>
+        <td><a href="/impianti/{{ p.id }}"><b>{{ p.client_name }}</b></a><br><span class="muted small">{{ p.name }}</span></td>
+        <td class="small">{% if p.diag.summary %}{{ p.diag.summary.unavailable }} non disp. · {{ p.diag.summary.low_battery }} batterie{% else %}<span class="muted">—</span>{% endif %}</td>
+        <td class="small muted">{{ p.last_seen | ago }}</td>
+      </tr>
+      {% endfor %}
+    </table></div>
+    {% else %}<div class="empty">Nessun impianto. Crea un cliente e aggiungi il suo impianto per iniziare.</div>{% endif %}
+  </div>
+  <div class="card">
+    <h2>Ticket aperti</h2>
+    {% for t in open_tickets %}
+      <p style="margin:0 0 12px"><a href="/ticket/{{ t.id }}"><b>{{ t.title }}</b></a><br>
+      <span class="muted small">{{ t.client_name }} · {{ t.updated_at | ago }}</span> <span class="badge s-{{ t.status }}">{{ TICKET_STATUS[t.status] }}</span></p>
+    {% else %}<p class="muted">Nessun ticket aperto.</p>{% endfor %}
+  </div>
+</div>
+{% endblock %}

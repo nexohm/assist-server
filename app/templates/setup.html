@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block title %}Prima configurazione{% endblock %}
+{% block content %}
+<div class="auth">
+  <div class="card">
+    <h1>Benvenuto</h1>
+    <p class="muted">Configura il tuo server di assistenza. Ci vuole un minuto.</p>
+    {% if errors %}<div class="errors">{% for e in errors %}<p>{{ e }}</p>{% endfor %}</div>{% endif %}
+    <form method="post">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <label for="company_name">Nome dell'azienda</label>
+      <input id="company_name" name="company_name" required placeholder="Es. Rossi Impianti" value="{{ form.company_name if form }}">
+      <p class="muted small">Lo vedranno i tuoi clienti nel pannello di Home Assistant e nei report.</p>
+      <label for="brand_color">Colore del marchio</label>
+      <input id="brand_color" type="color" name="brand_color" value="{{ form.brand_color if form else '#0f766e' }}">
+      <h2 style="margin-top:22px">Il tuo account amministratore</h2>
+      <label for="full_name">Nome e cognome</label>
+      <input id="full_name" name="full_name" value="{{ form.full_name if form }}">
+      <label for="username">Nome utente</label>
+      <input id="username" name="username" required autocomplete="username" value="{{ form.username if form }}">
+      <label for="password">Password (almeno 10 caratteri)</label>
+      <input id="password" type="password" name="password" required autocomplete="new-password">
+      <label for="password2">Ripeti la password</label>
+      <input id="password2" type="password" name="password2" required autocomplete="new-password">
+      <p style="margin-top:20px"><button class="btn">Completa la configurazione</button></p>
+    </form>
+  </div>
+</div>
+{% endblock %}

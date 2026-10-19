@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}{{ company }}{% endblock %} · {{ company }}</title>
+<link rel="stylesheet" href="/static/style.css">
+<style>:root { --brand: {{ brand_color }}; }</style>
+</head>
+<body>
+{% if user %}
+<header class="top"><div class="top-in">
+  <a class="brand" href="/">{{ company }}</a>
+  <nav class="nav">
+    {% set p = request.url.path %}
+    <a href="/" class="{{ 'on' if p == '/' }}">Panoramica</a>
+    <a href="/clienti" class="{{ 'on' if p.startswith('/clienti') or p.startswith('/impianti') }}">Clienti</a>
+    <a href="/ticket" class="{{ 'on' if p.startswith('/ticket') }}">Ticket</a>
+    {% if can(user, 'users') %}<a href="/utenti" class="{{ 'on' if p.startswith('/utenti') }}">Utenti</a>{% endif %}
+    {% if can(user, 'settings') %}<a href="/impostazioni" class="{{ 'on' if p.startswith('/impostazioni') }}">Impostazioni</a>{% endif %}
+  </nav>
+  <div class="who">
+    <span>{{ user.full_name or user.username }} · {{ ROLE_LABELS[user.role] }}</span>
+    <form class="inline" method="post" action="/logout"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="link-btn">Esci</button></form>
+  </div>
+</div></header>
+{% endif %}
+<main>
+  {% if flash %}<div class="flash">{{ flash }}</div>{% endif %}
+  {% block content %}{% endblock %}
+</main>
+{% if user %}<footer class="foot">{{ company }} · server di assistenza v{{ VERSION }}</footer>{% endif %}
+{% block scripts %}{% endblock %}
+</body>
+</html>

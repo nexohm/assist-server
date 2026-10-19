@@ -1,0 +1,44 @@
+# Server di assistenza — installazione con immagine già pronta.
+# Normalmente questo file lo crea install.sh in /opt/ha-suite: non serve scaricare il codice.
+#
+# Due modalità, scelte nel file .env:
+#   COMPOSE_PROFILES=https  -> avvia anche Caddy, che ottiene da solo il certificato HTTPS (porte 80/443)
+#   COMPOSE_PROFILES=       -> solo il server, dietro un reverse proxy che hai già (es. Nginx Proxy Manager)
+
+name: ha-suite
+
+services:
+  suite:
+    image: ${SUITE_IMAGE:-ghcr.io/nexohm/assist-server}:${SUITE_TAG:-latest}
+    restart: unless-stopped
+    environment:
+      SECURE_COOKIES: "1"
+    ports:
+      # Con Caddy resta raggiungibile solo da questa macchina; con un proxy esterno impostare SUITE_BIND=0.0.0.0
+      - "${SUITE_BIND:-127.0.0.1}:${SUITE_PORT:-8080}:8080"
+    volumes:
+      - suite_data:/data
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+  caddy:
+    image: caddy:2
+    profiles: ["https"]
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      DOMAIN: ${DOMAIN:-localhost}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - suite
+
+volumes:
+  suite_data:
+  caddy_data:
+  caddy_config:

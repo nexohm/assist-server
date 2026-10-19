@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% from "_macros.html" import status_badge %}
+{% block title %}{{ client.name }}{% endblock %}
+{% block content %}
+<div class="head"><div><p class="muted small" style="margin:0"><a href="/clienti">Clienti</a> /</p><h1>{{ client.name }}</h1></div>
+  {% if can(user, 'edit') %}<a class="btn ghost" href="/clienti/{{ client.id }}/modifica">Modifica</a>{% endif %}</div>
+<div class="grid g-side">
+  <div class="card">
+    <h2>Impianti</h2>
+    {% if plants %}
+    <table>
+      <tr><th>Stato</th><th>Impianto</th><th>Versione HA</th><th>Ultimo contatto</th></tr>
+      {% for p in plants %}<tr><td>{{ status_badge(p.status) }}</td><td><a href="/impianti/{{ p.id }}"><b>{{ p.name }}</b></a></td>
+        <td class="small">{{ p.ha_version or '—' }}</td><td class="small muted">{{ p.last_seen | ago }}</td></tr>{% endfor %}
+    </table>
+    {% else %}<p class="muted">Nessun impianto collegato.</p>{% endif %}
+    {% if can(user, 'edit') %}
+    <form method="post" action="/clienti/{{ client.id }}/impianti" class="row" style="margin-top:16px">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <input class="grow" name="name" placeholder="Nome impianto (es. Casa, Ufficio, Seconda casa)">
+      <button class="btn">+ Aggiungi impianto</button>
+    </form>
+    {% endif %}
+  </div>
+  <div class="card">
+    <h2>Dati cliente</h2>
+    <dl class="kv"><dt>Telefono</dt><dd>{{ client.phone or '—' }}</dd><dt>Email</dt><dd>{{ client.email or '—' }}</dd>
+      <dt>Indirizzo</dt><dd>{{ client.address or '—' }}</dd><dt>Cliente dal</dt><dd>{{ client.created_at | ts }}</dd></dl>
+    {% if client.notes %}<h2 style="margin-top:16px">Note</h2><p style="white-space:pre-wrap;margin:0">{{ client.notes }}</p>{% endif %}
+  </div>
+</div>
+{% endblock %}
