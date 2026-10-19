@@ -20,7 +20,8 @@
       {% for p in plants %}
       <tr>
         <td>{{ status_badge(p.status) }}</td>
-        <td><a href="/impianti/{{ p.id }}"><b>{{ p.client_name }}</b></a><br><span class="muted small">{{ p.name }}</span></td>
+        <td><a href="/impianti/{{ p.id }}"><b>{{ p.client_name }}</b></a><br><span class="muted small">{{ p.name }}</span>
+          {% if p.agent_version and agent_outdated(p.agent_version) %}<br><span class="tag-update">agente da aggiornare</span>{% endif %}</td>
         <td class="small">{% if p.diag.summary %}{{ p.diag.summary.unavailable }} non disp. · {{ p.diag.summary.low_battery }} batterie{% else %}<span class="muted">—</span>{% endif %}</td>
         <td class="small muted">{{ p.last_seen | ago }}</td>
       </tr>

@@ -62,8 +62,13 @@
     </div>
     <div class="card">
       <h2>Informazioni</h2>
-      <dl class="kv"><dt>Home Assistant</dt><dd>{{ plant.ha_version or '—' }}</dd><dt>Agente</dt><dd>{{ plant.agent_version or '—' }}</dd>
+      <dl class="kv"><dt>Home Assistant</dt><dd>{{ plant.ha_version or '—' }}</dd><dt>Agente</dt><dd>{{ plant.agent_version or '—' }}
+          {% if plant.agent_version and agent_outdated(plant.agent_version) %}<br><span class="tag-update">disponibile la {{ latest_agent() }}</span>{% endif %}</dd>
         <dt>Abbinato il</dt><dd>{{ plant.paired_at | ts }}</dd><dt>Creato il</dt><dd>{{ plant.created_at | ts }}</dd></dl>
+      {% if plant.agent_version and agent_outdated(plant.agent_version) %}
+      <p class="muted small" style="margin:12px 0 0">Per aggiornare l'agente, sull'Home Assistant del cliente:
+        Impostazioni → Componenti aggiuntivi → Agente Assistenza → <b>Aggiorna</b>.</p>
+      {% endif %}
       {% if can(user, 'edit') %}
       <div class="row" style="margin-top:16px">
         <form class="inline" method="post" action="/impianti/{{ plant.id }}/codice" onsubmit="return confirm('Il collegamento attuale smetterà di funzionare. Continuare?')">

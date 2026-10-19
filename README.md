@@ -34,6 +34,8 @@ ogni cliente ha un **add-on agente** sul proprio Home Assistant. Il cliente non 
 - sicurezza: password PBKDF2, token salvati solo come hash, protezione CSRF, blocco dopo 5 accessi falliti
 - **distribuito come immagine Docker già pronta** (amd64, arm64, armv7), installazione con un comando
 - copia di sicurezza automatica del database prima di ogni aggiornamento che ne cambia la struttura
+- **avvisi di aggiornamento**: banner per gli amministratori quando esce una nuova versione del server, ed etichetta
+  "agente da aggiornare" sugli impianti con un agente vecchio (controllo su GitHub ogni 6 ore, `UPDATE_CHECK=0` per disattivarlo)
 
 **Agente (add-on)**
 - nessuna dipendenza esterna: solo Python standard

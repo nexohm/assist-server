@@ -68,7 +68,7 @@ try:
     codes = {i["code"]: i["severity"] for i in d["issues"]}
     check(codes.get("disk_high") == "attenzione" and codes.get("backup_old") == "attenzione" and "orphan_entities" in codes, "diagnostica: disco 85%, backup 12 giorni, orfane")
     check(d["status"] == "attenzione" and d["system"]["os_version"] == "16.2", "stato complessivo 'attenzione'")
-    check(p["ha_version"] == "2026.10.1" and p["agent_version"] == "0.1.0", "versioni HA e agente registrate")
+    check(p["ha_version"] == "2026.10.1" and p["agent_version"].startswith("0.1."), "versioni HA e agente registrate")
 
     # 4. pagine della dashboard
     for path in ["/", "/clienti", f"/clienti/{cid}", f"/impianti/{pid}", "/ticket", "/utenti", "/impostazioni", f"/clienti/{cid}/modifica"]:

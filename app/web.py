@@ -11,7 +11,7 @@ from starlette.responses import JSONResponse, RedirectResponse, Response
 from starlette.routing import Route
 from starlette.templating import Jinja2Templates
 
-from . import db
+from . import db, updates
 from .agent_api import is_online, ring
 from .security import ROLE_LABELS, ROLES, can, hash_password, new_pair_code, verify_password
 
@@ -50,7 +50,8 @@ def ago(value):
 
 templates.env.filters["ts"] = fmt_ts
 templates.env.filters["ago"] = ago
-templates.env.globals.update(TICKET_STATUS=TICKET_STATUS, COMMAND_STATUS=COMMAND_STATUS,
+templates.env.globals.update(agent_outdated=updates.agent_outdated, latest_agent=updates.latest_agent,
+                             TICKET_STATUS=TICKET_STATUS, COMMAND_STATUS=COMMAND_STATUS,
                              ROLE_LABELS=ROLE_LABELS, ALLOWED_COMMANDS=ALLOWED_COMMANDS, can=can,
                              is_online=is_online)
 
@@ -82,7 +83,9 @@ def public_url(request: Request) -> str:
 
 
 def render(request, name, **ctx):
+    updates.maybe_check()
     ctx.update(
+        server_update=updates.server_update(),
         request=request,
         user=current_user(request),
         csrf=csrf_token(request),

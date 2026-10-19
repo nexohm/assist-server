@@ -26,6 +26,13 @@
 </div></header>
 {% endif %}
 <main>
+  {% if user and server_update and can(user, 'settings') %}
+  <div class="update">
+    <b>È disponibile la versione {{ server_update }} del server</b> (in uso: {{ VERSION }}).
+    Per aggiornare, sul server: <code>sudo ha-suite aggiorna</code>
+    · <a href="https://github.com/nexohm/assist-server/releases/tag/v{{ server_update }}" target="_blank" rel="noopener">novità</a>
+  </div>
+  {% endif %}
   {% if flash %}<div class="flash">{{ flash }}</div>{% endif %}
   {% block content %}{% endblock %}
 </main>
