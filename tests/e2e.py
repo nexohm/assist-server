@@ -112,7 +112,16 @@ try:
     check("sospeso dal cliente" in page, "dashboard mostra accesso sospeso")
     r = web.post(BASE + f"/impianti/{pid}/comandi", data={"csrf": csrf(page), "name": "run_diagnostics"})
     check("comando non inviato" in r.text, "diagnostica bloccata con consenso sospeso")
-    requests.post(PANEL + "consenso", data={"enabled": "1"})
+    requests.post(PANEL + "consenso", data={"enabled": "1", "durata": "4h"})
+    check(wait_for(lambda: db.execute("SELECT consent_until FROM plants WHERE id=?", (pid,)).fetchone()["consent_until"], 10, 0.2),
+          "accesso a tempo (4 ore): il server riceve la scadenza")
+    check("Accesso remoto fino al" in web.get(BASE + f"/impianti/{pid}").text and "fino al" in requests.get(PANEL).text,
+          "scadenza visibile in dashboard e nel pannello del cliente")
+    requests.post(PANEL + "consenso", data={"enabled": "0"})
+    requests.post(PANEL + "consenso", data={"enabled": "1", "durata": "sempre"})
+    check(wait_for(lambda: (lambda r: r["consent"] == 1 and r["consent_until"] is None)(
+          db.execute("SELECT consent, consent_until FROM plants WHERE id=?", (pid,)).fetchone()), 10, 0.2),
+          "accesso senza scadenza")
 
     # 8. ruoli
     up = web.get(BASE + "/utenti").text

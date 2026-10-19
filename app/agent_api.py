@@ -88,8 +88,11 @@ async def report(request: Request):
     except ValueError as e:
         return error(400, str(e))
     consent = 1 if data.get("consent", True) else 0
-    db.run("UPDATE plants SET consent = ?, ha_version = COALESCE(?, ha_version) WHERE id = ?",
-           consent, data.get("ha_version"), plant["id"])
+    until = data.get("consent_until") if consent else None
+    if until is not None and db.parse_ts(until) is None:
+        until = None  # valore non valido: lo ignoriamo
+    db.run("UPDATE plants SET consent = ?, consent_until = ?, ha_version = COALESCE(?, ha_version) WHERE id = ?",
+           consent, until, data.get("ha_version"), plant["id"])
     if consent and isinstance(data.get("diagnostics"), dict):
         db.run("UPDATE plants SET last_diag = ?, last_diag_at = ? WHERE id = ?",
                json.dumps(data["diagnostics"]), db.now(), plant["id"])

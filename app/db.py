@@ -94,6 +94,10 @@ MIGRATIONS = [
     ALTER TABLE commands ADD COLUMN sent_at TEXT;
     ALTER TABLE commands ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0;
     """,
+    # 3 — accesso remoto a tempo, scelto dal cliente nel pannello dell'add-on
+    """
+    ALTER TABLE plants ADD COLUMN consent_until TEXT;
+    """,
 ]
 
 

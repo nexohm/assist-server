@@ -7,7 +7,8 @@
     <h1>{{ plant.name }}</h1>
     <div class="row small"><span id="st">{{ status_badge(plant.status) }}</span>
       <span class="muted">Ultimo contatto: <span id="seen">{{ plant.last_seen | ago }}</span></span>
-      {% if plant.paired_at and not plant.consent %}<span class="badge s-attenzione">Accesso remoto sospeso dal cliente</span>{% endif %}</div>
+      {% if plant.paired_at and not plant.consent %}<span class="badge s-attenzione">Accesso remoto sospeso dal cliente</span>
+      {% elif plant.paired_at and plant.consent_until %}<span class="badge s-in_attesa">Accesso remoto fino al {{ plant.consent_until | ts }}</span>{% endif %}</div>
   </div>
   {% if plant.paired_at and not plant.revoked and can(user, 'commands') %}
   <div class="row">

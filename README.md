@@ -43,7 +43,8 @@ ogni cliente ha un **add-on agente** sul proprio Home Assistant. Il cliente non 
   automazioni spente, disco, età dell'ultimo backup
 - esegue solo i comandi della lista chiusa (`ping`, `run_diagnostics`), rifiuta tutto il resto
 - pannello **Assistenza** nella barra laterale di HA, con il nome e il colore dell'installatore:
-  il cliente apre richieste, legge le risposte, sospende o riattiva l'accesso remoto
+  il cliente apre richieste, legge le risposte, sospende o attiva l'accesso remoto **a tempo**
+  (1 ora, 4 ore, 24 ore, 7 giorni o senza scadenza: allo scadere si sospende da solo)
 
 ## Installazione del server (per l'installatore)
 

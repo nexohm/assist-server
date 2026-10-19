@@ -52,6 +52,7 @@ Errori: `404` codice inesistente o già usato, `410` codice scaduto.
 ```json
 {
   "consent": true,
+  "consent_until": "2026-10-20T18:30:00+00:00",   // null = accesso senza scadenza
   "ha_version": "2026.10.2",
   "diagnostics": { … }      // presente solo se il consenso è attivo e la diagnostica è stata eseguita
 }
@@ -59,7 +60,9 @@ Errori: `404` codice inesistente o già usato, `410` codice scaduto.
 
 Risposta: `{ "ok": true, "pending_commands": 0 }`
 
-L'agente lo invia ogni `heartbeat_seconds` (default 60). La diagnostica completa viaggia
+L'agente lo invia ogni `heartbeat_seconds` (default 60). `consent_until` è la scadenza dell'accesso
+remoto scelta dal cliente (campo facoltativo, aggiunto con l'agente 0.1.3): allo scadere l'agente
+manda `consent: false` da solo. La diagnostica completa viaggia
 ogni `diagnostics_minutes` (default 15) o quando richiesta da un comando.
 Il server considera l'impianto **offline** se non riceve nulla da più di 3 minuti.
 
