@@ -3,6 +3,11 @@
 set -euo pipefail
 cd "$(dirname "$(readlink -f "$0")")"
 
+# La configurazione (.env) è leggibile solo da root: se serve, si rilancia con sudo.
+if [[ $EUID -ne 0 ]] && { [[ -f .env && ! -r .env ]] || ! docker info >/dev/null 2>&1; }; then
+  exec sudo "$(readlink -f "$0")" "$@"
+fi
+
 dc() { docker compose "$@"; }
 
 case "${1:-aiuto}" in

@@ -66,6 +66,21 @@ def csrf_token(request: Request):
     return request.session["csrf"]
 
 
+def guess_public_url(request: Request) -> str:
+    """Indirizzo con cui il server è raggiunto da fuori, anche dietro tunnel o proxy.
+    Cloudflare aggiunge l'intestazione CF-Visitor con lo schema originale del browser:
+    vale anche quando in mezzo c'è un proxy (es. Nginx Proxy Manager) che parla in http."""
+    scheme = request.url.scheme
+    if '"https"' in request.headers.get("cf-visitor", "") or request.headers.get("x-forwarded-proto") == "https":
+        scheme = "https"
+    host = request.headers.get("x-forwarded-host") or request.headers.get("host") or request.url.netloc
+    return f"{scheme}://{host}"
+
+
+def public_url(request: Request) -> str:
+    return db.get_setting("public_url") or guess_public_url(request)
+
+
 def render(request, name, **ctx):
     ctx.update(
         request=request,
@@ -73,6 +88,7 @@ def render(request, name, **ctx):
         csrf=csrf_token(request),
         company=db.get_setting("company_name", "Assistenza"),
         brand_color=db.get_setting("brand_color", "#0f766e"),
+        public_url=public_url(request),
         flash=request.session.pop("flash", None),
     )
     return templates.TemplateResponse(request, name, ctx)
@@ -454,8 +470,13 @@ async def settings_page(request: Request):
         color = form.get("brand_color", "")
         if color.startswith("#") and len(color) == 7:
             db.set_setting("brand_color", color)
+        url = form.get("public_url", "").strip().rstrip("/")
+        if url and not (url.startswith("https://") or url.startswith("http://")):
+            return redirect("/impostazioni", "L'indirizzo pubblico deve iniziare con https://", request)
+        db.set_setting("public_url", url)
         return redirect("/impostazioni", "Impostazioni salvate.", request)
-    return render(request, "settings.html")
+    return render(request, "settings.html", guessed_url=guess_public_url(request),
+                  saved_url=db.get_setting("public_url", ""))
 
 
 async def health(request: Request):

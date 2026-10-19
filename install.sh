@@ -6,6 +6,7 @@
 # Senza domande (es. per script o installazioni in serie):
 #   curl -fsSL .../install.sh | sudo DOMAIN=assistenza.tuaditta.it bash
 #   curl -fsSL .../install.sh | sudo MODE=proxy bash
+#   curl -fsSL .../install.sh | sudo MODE=proxy SUITE_PORT=8085 bash   (porta diversa da 8080)
 set -euo pipefail
 
 REPO_RAW="${REPO_RAW:-https://raw.githubusercontent.com/nexohm/assist-server/main}"
@@ -41,6 +42,9 @@ fi
 docker compose version >/dev/null 2>&1 || fail "serve Docker Compose v2 (comando 'docker compose')."
 command -v curl >/dev/null || fail "serve curl."
 
+# Una porta è occupata se qualcosa risponde in locale (funziona anche senza "ss").
+port_busy() { (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null; }
+
 # ---------- modalità ----------
 MODE="${MODE:-}"
 DOMAIN="${DOMAIN:-}"
@@ -60,7 +64,7 @@ if [[ "$MODE" == "https" ]]; then
   [[ -n "$DOMAIN" ]] || DOMAIN=$(ask "Dominio pubblico (es. assistenza.tuaditta.it): ")
   [[ -n "$DOMAIN" ]] || fail "il dominio è obbligatorio per l'HTTPS automatico."
   for port in 80 443; do
-    if ss -ltnH "sport = :$port" 2>/dev/null | grep -q .; then
+    if port_busy "$port"; then
       if ! docker ps --format '{{.Names}}' | grep -q '^ha-suite-caddy'; then
         fail "la porta $port è già occupata. Se hai già un reverse proxy scegli la modalità 2 (MODE=proxy)."
       fi
@@ -69,9 +73,50 @@ if [[ "$MODE" == "https" ]]; then
   PROFILES=https; BIND=127.0.0.1
 else
   # In ascolto su tutte le interfacce: il proxy (anche se gira in un altro container,
-  # come Nginx Proxy Manager) lo raggiunge su http://<ip-di-questa-macchina>:8080.
+  # come Nginx Proxy Manager) lo raggiunge su http://<ip-di-questa-macchina>:<porta>.
   # I cookie di accesso sono "solo HTTPS": dal browser si entra comunque solo passando dal proxy.
   PROFILES=""; BIND=0.0.0.0
+fi
+
+# ---------- porta del server ----------
+already_ours() { docker ps --format '{{.Names}} {{.Ports}}' 2>/dev/null | grep -q "^ha-suite-suite-1 .*:$1->"; }
+first_free() { local p=$1; while port_busy "$p"; do p=$((p + 1)); done; echo "$p"; }
+valid_port() { [[ "$1" =~ ^[0-9]+$ ]] && (( $1 >= 1024 && $1 <= 65535 )); }
+
+if [[ -f "$INSTALL_DIR/.env" ]] && grep -q '^SUITE_PORT=' "$INSTALL_DIR/.env"; then
+  # Reinstallazione o aggiornamento: si tiene la porta già configurata nel proxy
+  SUITE_PORT=$(grep '^SUITE_PORT=' "$INSTALL_DIR/.env" | cut -d= -f2)
+  info "Porta del server: $SUITE_PORT (configurazione esistente)"
+elif [[ -n "${SUITE_PORT:-}" ]]; then
+  # Porta indicata nel comando (SUITE_PORT=8086): si usa quella o ci si ferma
+  valid_port "$SUITE_PORT" || fail "porta non valida: $SUITE_PORT (scegline una tra 1024 e 65535)."
+  port_busy "$SUITE_PORT" && ! already_ours "$SUITE_PORT" \
+    && fail "la porta $SUITE_PORT è già occupata. Prova con: SUITE_PORT=$(first_free "$SUITE_PORT")"
+elif [[ "$MODE" == "https" ]]; then
+  # Con Caddy la porta resta interna alla macchina: basta che sia libera
+  SUITE_PORT=$(first_free 8080)
+else
+  free=$(first_free 8080)
+  echo
+  info "Porta su cui il tuo reverse proxy raggiungerà il server:"
+  info "1) Trovala tu: la prima libera da 8080 in su (ora: $free)"
+  info "2) La scelgo io"
+  choice=$(ask "Scelta [1]: " "1")
+  if [[ "$choice" == "2" ]]; then
+    while true; do
+      SUITE_PORT=$(ask "Porta [$free]: " "$free")
+      if ! valid_port "$SUITE_PORT"; then
+        info "Porta non valida: scegline una tra 1024 e 65535."
+      elif port_busy "$SUITE_PORT" && ! already_ours "$SUITE_PORT"; then
+        info "La porta $SUITE_PORT è già usata da un altro servizio. Prima libera successiva: $(first_free "$SUITE_PORT")"
+      else
+        break
+      fi
+    done
+  else
+    SUITE_PORT=$free
+  fi
+  info "Userò la porta $SUITE_PORT"
 fi
 
 # ---------- file di installazione ----------
@@ -93,7 +138,7 @@ else
 DOMAIN=${DOMAIN:-}
 COMPOSE_PROFILES=${PROFILES}
 SUITE_BIND=${BIND}
-SUITE_PORT=8080
+SUITE_PORT=${SUITE_PORT}
 SUITE_IMAGE=${SUITE_IMAGE}
 SUITE_TAG=${SUITE_TAG}
 EOF
@@ -121,7 +166,7 @@ if [[ "$MODE" == "https" ]]; then
   info "Il primo accesso può richiedere qualche secondo: Caddy sta ottenendo il certificato."
 else
   ip=$(hostname -I 2>/dev/null | awk '{print $1}')
-  info "Il server ascolta su http://$ip:8080"
+  info "Il server ascolta su http://$ip:$SUITE_PORT"
   info "Configura il tuo reverse proxy verso questo indirizzo con HTTPS e"
   info "un timeout di lettura di almeno 60 secondi, poi apri il dominio nel browser."
 fi
