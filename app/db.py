@@ -106,6 +106,12 @@ MIGRATIONS = [
     ALTER TABLE plants ADD COLUMN ha_external_url TEXT;
     ALTER TABLE plants ADD COLUMN ha_url_manual TEXT;
     """,
+    # 5 — accesso amministratore temporaneo: richiesta dell'installatore e stato comunicato dall'agente
+    #     (la password non viene mai salvata nel database)
+    """
+    ALTER TABLE plants ADD COLUMN admin_requested_at TEXT;
+    ALTER TABLE plants ADD COLUMN admin_state TEXT;
+    """,
 ]
 
 

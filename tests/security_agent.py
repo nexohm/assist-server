@@ -205,6 +205,77 @@ finally:
 check(not leaked and agent.state.get("last_diag") is None,
       "etichette: se il filtro non si può applicare la diagnostica non parte (nessuna entità esclusa inviata)")
 
+# ---------------------------------------------------------------- accesso amministratore temporaneo
+import time as _time  # noqa: E402
+from agent import admin as admin_mod  # noqa: E402
+
+fake_users, ws_log, fail = {}, [], {"delete": False}
+def fake_ws(command, timeout=10, **params):
+    ws_log.append((command, params))
+    if command == "config/auth/create":
+        uid = f"u{len(ws_log)}"
+        fake_users[uid] = {"group_ids": params.get("group_ids"), "username": None}
+        return {"user": {"id": uid}}
+    if command == "config/auth_provider/homeassistant/create":
+        fake_users[params["user_id"]]["username"] = params["username"]
+        return {}
+    if command == "config/auth/delete":
+        if fail["delete"]:
+            raise ha_mod.HAError("Home Assistant non risponde")
+        fake_users.pop(params["user_id"], None)
+        return {}
+    raise ha_mod.HAError("comando sconosciuto")
+orig_ws = ha_mod.ws_command
+ha_mod.ws_command = fake_ws
+notified = []
+agent.notify_client = lambda title, message, tag: notified.append(title) or 1
+adm = agent.admin
+try:
+    ok, _, err = agent.execute({"name": "admin_password"})
+    check(not ok and not fake_users, "amministratore: il server da solo non può far creare un utente (serve il consenso del cliente)", err)
+
+    adm.grant("1h")
+    creds = adm.reveal()
+    state_text = open(os.path.join(TMP, "state.json")).read()
+    check(len(fake_users) == 1 and list(fake_users.values())[0]["group_ids"] == ["system-admin"]
+          and creds["password"] not in state_text and len(creds["password"]) >= 20,
+          "amministratore: utente creato con password lunga, mai salvata dall'agente")
+    first = adm.get()["user_id"]
+    adm.reveal()
+    check(first not in fake_users and len(fake_users) == 1,
+          "amministratore: ogni nuova password ricrea l'utente (password e sessioni vecchie non valgono più)")
+
+    # scadenza controllata dall'agente, anche se il server non risponde
+    srv.shutdown()
+    a = adm.get(); a["until"] = _time.time() - 1; agent.state.update(admin=a)
+    adm.tick()
+    check(not fake_users and not adm.active(), "amministratore: alla scadenza l'utente viene cancellato anche senza server")
+
+    # HA non risponde alla chiusura: il permesso si toglie subito, la cancellazione viene ritentata
+    adm.grant("4h"); adm.reveal(); fail["delete"] = True
+    adm.close("cliente")
+    stuck = bool(fake_users) and not adm.active()
+    fail["delete"] = False; adm.tick()
+    check(stuck and not fake_users, "amministratore: se HA non risponde, l'utente viene cancellato al tentativo successivo")
+
+    # senza scadenza: utente cancellato dopo 30 giorni senza uso, il permesso resta; promemoria ogni 30 giorni
+    adm.grant("sempre"); adm.reveal()
+    a = adm.get(); a["last_reveal"] = _time.time() - 31 * 86400; a["last_reminder"] = _time.time() - 31 * 86400
+    agent.state.update(admin=a); notified.clear()
+    adm.tick()
+    check(not fake_users and adm.active() and any("ancora attivo" in n for n in notified),
+          "senza scadenza: utente cancellato dopo 30 giorni senza uso e promemoria al cliente, il permesso resta")
+
+    # impianto scollegato dall'installatore: l'accesso si chiude
+    agent.state.update(connection="revocato", token=None)
+    adm.reveal() if adm.active() else None
+    adm.tick()
+    check(not adm.active() and not fake_users, "amministratore: se l'impianto viene scollegato l'accesso si chiude")
+    check(admin_mod.DURATIONS.get("sempre", 0) is None and "status" in dir(adm) and "password" not in json.dumps(adm.status()),
+          "amministratore: lo stato inviato al server non contiene mai la password")
+finally:
+    ha_mod.ws_command = orig_ws
+
 bad = [r for r in results if not r[0]]
 print(f"\n{len(results) - len(bad)} difesi, {len(bad)} vulnerabili su {len(results)} controlli")
 sys.exit(1 if bad else 0)

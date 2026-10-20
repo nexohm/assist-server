@@ -316,6 +316,34 @@ try:
     check("Impianti · critici" in fp and "mostra tutti" in fp and fp.count('class="pstate"') == sum(
           1 for _ in re.finditer(r'badge s-critico', fp)), "filtro della panoramica per stato")
 
+    # accesso amministratore temporaneo: l'installatore chiede, il cliente concede, l'agente crea l'utente
+    fake_users = lambda: requests.get("http://127.0.0.1:8123/fake/users").json()
+    page = web.get(BASE + f"/impianti/{pid}").text
+    check("Chiedi accesso amministratore" in page, "amministratore: pulsante per chiedere l'accesso")
+    web.post(BASE + f"/impianti/{pid}/amministratore", data={"csrf": csrf(page), "op": "richiedi"})
+    check(wait_for(lambda: (json.load(open(f"{S}/agentdata/state.json")).get("admin") or {}).get("request"), 40, 0.5),
+          "amministratore: la richiesta arriva all'agente")
+    check("chiede l&#39;accesso amministratore" in requests.get(PANEL + "?s=impianto").text
+          and any("richiesta di accesso amministratore" in c["data"].get("title", "") for c in ha_calls()),
+          "amministratore: il cliente vede la richiesta e riceve una notifica")
+    panel_post("admin", {"op": "consenti", "durata": "1h"})
+    check(wait_for(lambda: '"active": true' in (db.execute("SELECT admin_state FROM plants WHERE id=?", (pid,)).fetchone()[0] or ""), 40, 0.5)
+          and db.execute("SELECT admin_requested_at FROM plants WHERE id=?", (pid,)).fetchone()[0] is None,
+          "amministratore: concesso per 1 ora, la richiesta si chiude")
+    check(not fake_users(), "amministratore: nessun utente creato finché l'installatore non chiede la password")
+    page = web.get(BASE + f"/impianti/{pid}").text
+    web.post(BASE + f"/impianti/{pid}/amministratore", data={"csrf": csrf(page), "op": "password"})
+    users = wait_for(lambda: fake_users() or None, 40, 0.5)
+    page = wait_for(lambda: (lambda t: t if 'class="secret"' in t else None)(web.get(BASE + f"/impianti/{pid}").text), 40, 0.5)
+    check(users and len(users) == 1 and users[0]["group_ids"] == ["system-admin"] and page and users[0]["password"] in page
+          and users[0]["username"] in page, "amministratore: utente creato in HA, credenziali mostrate all'installatore")
+    check(users and users[0]["password"] not in json.dumps([dict(r) for r in db.execute("SELECT * FROM commands")]),
+          "amministratore: password non salvata nel database del server")
+    panel_post("admin", {"op": "chiudi"})
+    check(wait_for(lambda: not fake_users(), 20, 0.5), "amministratore: il cliente chiude e l'utente viene cancellato")
+    check(wait_for(lambda: 'class="secret"' not in web.get(BASE + f"/impianti/{pid}").text, 40, 0.5),
+          "amministratore: la password sparisce dalla dashboard quando l'accesso è chiuso")
+
     # 11. revoca
     page = web.get(BASE + f"/impianti/{pid}").text
     web.post(BASE + f"/impianti/{pid}/revoca", data={"csrf": csrf(page)})

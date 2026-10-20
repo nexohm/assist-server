@@ -65,6 +65,55 @@
         <span class="badge s-{{ t.status }}">{{ TICKET_STATUS[t.status] }}</span> <span class="muted small">{{ t.updated_at | ago }}</span></p>
       {% else %}<p class="muted">Nessun ticket.</p>{% endfor %}
     </div>
+    {% if plant.paired_at and not plant.revoked %}
+    {% set adm = plant.admin %}
+    <div class="card" id="admin">
+      <h2>Accesso amministratore</h2>
+      {% if adm.active %}
+        <p style="margin:0 0 8px"><span class="pill on">concesso</span>
+          {% if adm.permanent %}<b>senza scadenza</b>{% else %}fino al <b>{{ adm.until | ts }}</b>{% endif %}</p>
+        {% if admin_secret %}
+        <div class="secret">
+          <p class="small muted" style="margin:0 0 6px">Credenziali per entrare in Home Assistant come amministratore:</p>
+          <dl class="kv"><dt>Utente</dt><dd><code>{{ admin_secret.username }}</code>
+              <button type="button" class="link-btn copy" data-copy="{{ admin_secret.username }}">copia</button></dd>
+            <dt>Password</dt><dd><code>{{ admin_secret.password }}</code>
+              <button type="button" class="link-btn copy" data-copy="{{ admin_secret.password }}">copia</button></dd></dl>
+          <p class="small muted" style="margin:6px 0 0">Non viene salvata: sparisce da questa pagina entro {{ ((admin_secret.expires - now_ts) / 60) | round | int }} minuti.
+            Resta valida in Home Assistant finché non ne chiedi un'altra o l'accesso scade.</p>
+        </div>
+        {% elif adm.username %}
+        <p class="small muted" style="margin:0 0 8px">Utente attivo in Home Assistant: <code>{{ adm.username }}</code>. Per entrare serve una password nuova.</p>
+        {% endif %}
+        {% if can(user, 'edit') %}
+        <div class="row" style="margin-top:10px">
+          <form class="inline" method="post" action="/impianti/{{ plant.id }}/amministratore"
+                data-confirm="Viene creata una password nuova: quella precedente e le sessioni aperte smettono di funzionare. Continuare?">
+            <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="op" value="password">
+            <button class="btn small">{{ 'Nuova password' if admin_secret or adm.username else 'Mostra password' }}</button></form>
+          <form class="inline" method="post" action="/impianti/{{ plant.id }}/amministratore" data-confirm="Chiudere l'accesso amministratore? L'utente verrà cancellato.">
+            <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="op" value="chiudi">
+            <button class="btn danger small">Chiudi accesso</button></form>
+        </div>
+        <p class="small muted" style="margin:8px 0 0">Il cliente riceve una notifica ogni volta che entri e può chiudere l'accesso quando vuole.</p>
+        {% endif %}
+      {% elif plant.admin_requested_at %}
+        <p style="margin:0 0 8px">Richiesta inviata {{ plant.admin_requested_at | ago }}: in attesa che il cliente la accetti dal suo pannello.</p>
+        {% if can(user, 'edit') %}
+        <form method="post" action="/impianti/{{ plant.id }}/amministratore"><input type="hidden" name="csrf" value="{{ csrf }}">
+          <input type="hidden" name="op" value="annulla"><button class="btn ghost small">Annulla richiesta</button></form>
+        {% endif %}
+      {% else %}
+        <p class="small muted" style="margin:0 0 8px">Per modificare l'impianto serve un utente amministratore in Home Assistant.
+          Lo crea l'agente solo dopo il consenso del cliente, per il tempo che sceglie lui.
+          {% if adm.declined %}<br>L'ultima richiesta è stata rifiutata dal cliente.{% endif %}</p>
+        {% if can(user, 'edit') %}
+        <form method="post" action="/impianti/{{ plant.id }}/amministratore"><input type="hidden" name="csrf" value="{{ csrf }}">
+          <input type="hidden" name="op" value="richiedi"><button class="btn ghost small">Chiedi accesso amministratore</button></form>
+        {% endif %}
+      {% endif %}
+    </div>
+    {% endif %}
     <div class="card">
       <h2>Informazioni</h2>
       <dl class="kv"><dt>Home Assistant</dt><dd>{{ plant.ha_version or '—' }}</dd><dt>Agente</dt><dd>{{ plant.agent_version or '—' }}
@@ -129,5 +178,5 @@
 {% endblock %}
 {% block scripts %}
 <div id="plant-live" hidden data-url="/impianti/{{ plant.id }}/stato.json"
-     data-state="{{ {'status': plant.status, 'diag': plant.last_diag_at, 'cmds': commands | map(attribute='status') | list} | tojson | forceescape }}"></div>
+     data-state="{{ {'status': plant.status, 'diag': plant.last_diag_at, 'cmds': commands | map(attribute='status') | list, 'admin': admin_key(plant)} | tojson | forceescape }}"></div>
 {% endblock %}

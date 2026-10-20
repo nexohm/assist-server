@@ -55,6 +55,8 @@ Errori: `404` codice inesistente o già usato, `410` codice scaduto.
   "consent_until": "2026-10-20T18:30:00+00:00",   // null = accesso senza scadenza
   "ha_urls": { "internal": "http://192.168.1.50:8123", "external": "https://casa.duckdns.org" },  // dall'agente 0.1.4
   "ha_version": "2026.10.2",
+  "admin": { "active": true, "permanent": false, "until": "2026-10-20T19:53:00+00:00",   // dall'agente 0.1.8
+             "username": "assistenza_3cf8e5", "last_reveal": "…", "declined": null },
   "diagnostics": { … }      // presente solo se il consenso è attivo e la diagnostica è stata eseguita
 }
 ```
@@ -62,7 +64,7 @@ Errori: `404` codice inesistente o già usato, `410` codice scaduto.
 Risposta:
 
 ```json
-{ "ok": true, "pending_commands": 0, "tickets_updated": "2026-10-20T14:05:00+00:00",
+{ "ok": true, "pending_commands": 0, "tickets_updated": "2026-10-20T14:05:00+00:00", "admin_requested": null,
   "server_name": "Rossi Impianti", "brand_color": "#0f766e" }
 ```
 
@@ -74,6 +76,11 @@ remoto scelta dal cliente (campo facoltativo, aggiunto con l'agente 0.1.3): allo
 manda `consent: false` da solo. La diagnostica completa viaggia
 ogni `diagnostics_minutes` (default 15) o quando richiesta da un comando.
 Il server considera l'impianto **offline** se non riceve nulla da più di 3 minuti.
+
+`admin` (dall'agente 0.1.8) è lo stato dell'accesso amministratore concesso dal cliente: **non contiene
+mai la password**. `admin_requested` (dal server 0.2.7) è la data della richiesta dell'installatore
+ancora in attesa: l'agente la mostra al cliente, che può concedere l'accesso o rifiutarlo
+(`declined` riporta la richiesta rifiutata, così il server la chiude).
 
 ### Formato della diagnostica
 
@@ -104,6 +111,11 @@ Risultato: `POST /api/agent/commands/{id}/result`
 |---|---|---|
 | `ping` | Risponde subito con versione agente e HA | no |
 | `run_diagnostics` | Esegue la diagnostica completa e la restituisce | sì |
+| `admin_password` | Ricrea l'utente amministratore temporaneo e restituisce `{username, password}` | accesso amministratore concesso dal cliente |
+| `admin_close` | Chiude l'accesso amministratore e cancella l'utente | no |
+
+La password di `admin_password` il server la tiene **solo in memoria** per 15 minuti: nel database va
+un segnaposto. Scadenza e cancellazione dell'utente le gestisce l'agente, non il server.
 
 Nuovi comandi (es. `apply_blueprint`, `reload_integration`, `create_backup`) si aggiungono
 **prima all'agente** (che li dichiara in `capabilities` nel rapporto, dalla v2) e poi al server.

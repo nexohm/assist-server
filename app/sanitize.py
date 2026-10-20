@@ -5,6 +5,7 @@ versione futura può mandare qualsiasi JSON. Qui lo riportiamo alla forma che la
 aspetta, così un dato strano non può rompere le pagine né finire dove non deve.
 """
 import math
+import re
 
 from . import db
 
@@ -85,6 +86,20 @@ def diagnostics(value):
         },
         "issues": issues,
     }
+
+
+def admin_state(value):
+    """Stato dell'accesso amministratore comunicato dall'agente (mai la password)."""
+    if not isinstance(value, dict):
+        return None
+    username = text(value.get("username"), 60)
+    if username and not re.fullmatch(r"[a-z0-9_]{3,60}", username):
+        username = None
+    active = value.get("active") is True
+    return {"active": active, "permanent": active and value.get("permanent") is True,
+            "until": timestamp(value.get("until")) if active else None,
+            "username": username, "last_reveal": timestamp(value.get("last_reveal")),
+            "declined": text(value.get("declined"), 40)}
 
 
 def stored_diagnostics(raw):

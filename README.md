@@ -48,6 +48,8 @@ ogni cliente ha un **add-on agente** sul proprio Home Assistant. Il cliente non 
   lo stato, se è **online** e se il cliente lo tiene **collegato** (accesso remoto attivo)
 - **modifica ed eliminazione** di impianti e clienti (eliminare è riservato all'amministratore e chiede di riscrivere il nome)
 - pulsanti per **copiare** codice di abbinamento e indirizzo del server
+- **accesso amministratore temporaneo** all'Home Assistant del cliente: l'installatore lo chiede, il cliente lo
+  concede dal pannello per il tempo che sceglie; password nuova a ogni ingresso, mai salvata (vedi docs/SECURITY.md)
 
 **Agente (add-on)**
 - nessuna dipendenza esterna: solo Python standard

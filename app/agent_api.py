@@ -8,7 +8,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
-from . import db, notify, sanitize
+from . import db, notify, sanitize, secrets_store
 from .security import hash_token, new_token, normalize_pair_code
 
 PROTOCOL_VERSION = 1
@@ -133,6 +133,15 @@ async def report(request: Request):
             return v if v and re.fullmatch(r"https?://[^\s\"'<>]+", v) else None
         db.run("UPDATE plants SET ha_internal_url = ?, ha_external_url = ? WHERE id = ?",
                clean_url(urls.get("internal")), clean_url(urls.get("external")), plant["id"])
+    admin = sanitize.admin_state(data.get("admin"))
+    if admin is not None:
+        db.run("UPDATE plants SET admin_state = ? WHERE id = ?", json.dumps(admin), plant["id"])
+        if not admin["active"] or not admin["username"]:
+            secrets_store.drop(plant["id"])  # accesso chiuso o utente cancellato: la password non vale più
+        # richiesta soddisfatta (accesso concesso) o rifiutata dal cliente: non va più riproposta
+        req = plant.get("admin_requested_at")
+        if req and (admin["active"] or admin["declined"] == req):
+            db.run("UPDATE plants SET admin_requested_at = NULL WHERE id = ? AND admin_requested_at = ?", plant["id"], req)
     diag = sanitize.diagnostics(data.get("diagnostics"))
     if consent and diag:
         db.run("UPDATE plants SET last_diag = ?, last_diag_at = ? WHERE id = ?",
@@ -141,7 +150,8 @@ async def report(request: Request):
     # Nome e colore dell'installatore viaggiano a ogni rapporto: se cambiano, il pannello del cliente si aggiorna.
     # Ultimo aggiornamento dei ticket dell'impianto: se cambia, l'agente li rilegge e avvisa il cliente.
     last_ticket = db.one("SELECT MAX(updated_at) AS ts FROM tickets WHERE plant_id = ?", plant["id"])
-    return JSONResponse({"ok": True, "pending_commands": pending["n"],
+    requested = db.one("SELECT admin_requested_at FROM plants WHERE id = ?", plant["id"])["admin_requested_at"]
+    return JSONResponse({"ok": True, "pending_commands": pending["n"], "admin_requested": requested,
                          "tickets_updated": last_ticket["ts"],
                          "server_name": db.get_setting("company_name", "Assistenza"),
                          "brand_color": db.get_setting("brand_color", "#0f766e")})
@@ -200,7 +210,17 @@ async def command_result(request: Request):
     except BadRequest as e:
         return error(e.status, str(e))
     ok = data.get("ok") is True
-    if ok and cmd["name"] == "run_diagnostics":
+    if ok and cmd["name"] == "admin_password":
+        # La password resta solo in memoria, per pochi minuti: nel database va un segnaposto.
+        res = data.get("result") if isinstance(data.get("result"), dict) else {}
+        username, password = sanitize.text(res.get("username"), 60), res.get("password")
+        if (username and re.fullmatch(r"[a-z0-9_]{3,60}", username) and isinstance(password, str)
+                and re.fullmatch(r"[A-Za-z0-9]{16,64}", password)):
+            secrets_store.put(cmd["id"], plant["id"], username, password)
+            payload = {"username": username, "password": "(mostrata una volta, non salvata)"}
+        else:
+            ok, payload = False, {"error": "credenziali non valide"}
+    elif ok and cmd["name"] == "run_diagnostics":
         payload = sanitize.diagnostics(data.get("result"))
         ok = payload is not None
         if not ok:

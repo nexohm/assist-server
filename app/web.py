@@ -15,7 +15,7 @@ from starlette.responses import JSONResponse, RedirectResponse, Response
 from starlette.routing import Route
 from starlette.templating import Jinja2Templates
 
-from . import db, notify, sanitize, updates
+from . import db, notify, sanitize, secrets_store, updates
 from .agent_api import is_online, ring
 from .security import (ROLE_LABELS, ROLES, can, hash_password, new_pair_code, new_setup_code,
                        verify_password, DUMMY_HASH)
@@ -28,6 +28,8 @@ ALLOWED_COMMANDS = {
     "ping": "Ping",
 }
 TICKET_STATUS = {"aperto": "Aperto", "in_lavorazione": "In lavorazione", "chiuso": "Chiuso"}
+# Comandi dell'accesso amministratore: hanno pulsanti e permesso propri (li concede il cliente)
+ADMIN_COMMANDS = {"admin_password": "Accesso amministratore: nuova password", "admin_close": "Accesso amministratore: chiusura"}
 COMMAND_STATUS = {"in_attesa": "In attesa", "inviato": "Inviato", "completato": "Completato", "errore": "Errore"}
 
 
@@ -80,7 +82,7 @@ templates.env.filters["ts"] = fmt_ts
 templates.env.filters["ago"] = ago
 templates.env.globals.update(agent_outdated=updates.agent_outdated, latest_agent=updates.latest_agent,
                              TICKET_STATUS=TICKET_STATUS, COMMAND_STATUS=COMMAND_STATUS,
-                             ROLE_LABELS=ROLE_LABELS, ALLOWED_COMMANDS=ALLOWED_COMMANDS, can=can,
+                             ROLE_LABELS=ROLE_LABELS, ALLOWED_COMMANDS={**ALLOWED_COMMANDS, **ADMIN_COMMANDS}, can=can,
                              is_online=is_online, asset=asset)
 
 
@@ -502,6 +504,7 @@ def _load_plant(pid):
         p["status"] = plant_status(p)
         p["online"] = is_online(p)
         p["diag"] = sanitize.stored_diagnostics(p["last_diag"])
+        p["admin"] = sanitize.admin_state(db.loads(p.get("admin_state"), None)) or {}
     return p
 
 
@@ -513,7 +516,10 @@ async def plant_detail(request: Request):
     commands = db.all_("SELECT c.*, u.username FROM commands c LEFT JOIN users u ON u.id = c.created_by "
                        "WHERE plant_id = ? ORDER BY c.id DESC LIMIT 15", plant["id"])
     tickets = db.all_("SELECT * FROM tickets WHERE plant_id = ? ORDER BY updated_at DESC LIMIT 20", plant["id"])
-    return render(request, "plant_detail.html", plant=plant, commands=commands, tickets=tickets)
+    # La password dell'accesso amministratore si mostra solo a chi può usarla (non al ruolo lettura)
+    admin_secret = secrets_store.get(plant["id"]) if can(request.state.user, "edit") else None
+    return render(request, "plant_detail.html", plant=plant, commands=commands, tickets=tickets, admin_secret=admin_secret,
+                  now_ts=time.time())
 
 
 @guard()
@@ -524,7 +530,16 @@ async def plant_state_json(request: Request):
         return JSONResponse({"error": "not found"}, status_code=404)
     cmds = db.all_("SELECT id, status FROM commands WHERE plant_id = ? ORDER BY id DESC LIMIT 15", plant["id"])
     return JSONResponse({"online": plant["online"], "status": plant["status"], "last_seen": ago(plant["last_seen"]),
-                         "last_diag_at": plant["last_diag_at"], "commands": cmds})
+                         "last_diag_at": plant["last_diag_at"], "commands": cmds, "admin": admin_key(plant)})
+
+
+def admin_key(plant):
+    """Riassunto dello stato amministratore: se cambia, la pagina dell'impianto si ricarica da sola."""
+    a = plant.get("admin") or {}
+    return f'{a.get("active")}|{a.get("until")}|{a.get("username")}|{plant.get("admin_requested_at")}|{a.get("declined")}'
+
+
+templates.env.globals["admin_key"] = admin_key
 
 
 @guard("edit")
@@ -583,6 +598,43 @@ async def plant_command(request: Request):
            plant["id"], name, request.state.user["id"], db.now())
     ring(plant["id"])
     return redirect(f"/impianti/{pid}", f"Comando «{ALLOWED_COMMANDS[name]}» inviato.", request)
+
+
+# ---------- accesso amministratore temporaneo ----------
+
+def _admin_command(plant, name, request):
+    db.run("INSERT INTO commands(plant_id, name, args, created_by, created_at) VALUES(?, ?, '{}', ?, ?)",
+           plant["id"], name, request.state.user["id"], db.now())
+    ring(plant["id"])
+
+
+@guard("edit")
+async def plant_admin(request: Request):
+    pid = request.path_params["pid"]
+    plant = _load_plant(pid)
+    if not plant or not plant["paired_at"] or plant["revoked"]:
+        return render(request, "error.html", message="Impianto non trovato o non collegato.")
+    op = request.state.form.get("op")
+    active = plant["admin"].get("active")
+    if op == "richiedi":
+        if active:
+            return redirect(f"/impianti/{pid}", "Il cliente ha già concesso l'accesso amministratore.", request)
+        db.run("UPDATE plants SET admin_requested_at = ? WHERE id = ?", db.now(), pid)
+        return redirect(f"/impianti/{pid}", "Richiesta inviata: il cliente riceverà una notifica in Home Assistant.", request)
+    if op == "annulla":
+        db.run("UPDATE plants SET admin_requested_at = NULL WHERE id = ?", pid)
+        return redirect(f"/impianti/{pid}", "Richiesta annullata.", request)
+    if op == "password":
+        if not active:
+            return redirect(f"/impianti/{pid}", "Il cliente non ha concesso l'accesso amministratore.", request, error=True)
+        secrets_store.drop(plant["id"])
+        _admin_command(plant, "admin_password", request)
+        return redirect(f"/impianti/{pid}", "Richiesta inviata all'agente: tra pochi secondi compare la password.", request)
+    if op == "chiudi":
+        secrets_store.drop(plant["id"])
+        _admin_command(plant, "admin_close", request)
+        return redirect(f"/impianti/{pid}", "Chiusura inviata: l'agente cancellerà l'utente amministratore.", request)
+    return render(request, "error.html", message="Operazione non valida.")
 
 
 @guard()
@@ -814,6 +866,7 @@ routes = [
     Route("/impianti/{pid:int}/codice", plant_pair_code, methods=["POST"]),
     Route("/impianti/{pid:int}/revoca", plant_revoke, methods=["POST"]),
     Route("/impianti/{pid:int}/nome", plant_rename, methods=["POST"]),
+    Route("/impianti/{pid:int}/amministratore", plant_admin, methods=["POST"]),
     Route("/impianti/{pid:int}/elimina", plant_delete, methods=["POST"]),
     Route("/clienti/{cid:int}/elimina", client_delete, methods=["POST"]),
     Route("/impianti/{pid:int}/comandi", plant_command, methods=["POST"]),

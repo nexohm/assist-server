@@ -265,6 +265,37 @@ if admin.get(BASE + f"/impianti/{pa}").status_code >= 500:
     broken.append("consent_until senza fuso orario")
 check(not broken, "un agente con dati strani non può rompere le pagine della dashboard", "; ".join(broken[:2]))
 
+# ---------------------------------------------------------------- accesso amministratore temporaneo
+def report_a(admin_state):
+    return requests.post(BASE + "/api/agent/report", headers=agent_headers(ta), json={"consent": True, "admin": admin_state}).json()
+
+report_a({"active": False})
+form_post(admin, f"/impianti/{pa}/amministratore", f"/impianti/{pa}", {"op": "password"})
+check(not db.execute("SELECT 1 FROM commands WHERE plant_id = ? AND name = 'admin_password'", (pa,)).fetchone(),
+      "amministratore: senza il consenso del cliente il server non chiede nessuna password all'agente")
+form_post(let, f"/impianti/{pa}/amministratore", f"/impianti/{pa}", {"op": "richiedi"})
+check(db.execute("SELECT admin_requested_at FROM plants WHERE id = ?", (pa,)).fetchone()[0] is None,
+      "amministratore: il ruolo lettura non può chiedere l'accesso")
+report_a({"active": True, "until": "2099-01-01T00:00:00+00:00", "username": "assistenza_abc123"})
+form_post(admin, f"/impianti/{pa}/amministratore", f"/impianti/{pa}", {"op": "password"})
+cmd = db.execute("SELECT id FROM commands WHERE plant_id = ? AND name = 'admin_password' ORDER BY id DESC", (pa,)).fetchone()
+SECRET = "Zx9" + "q" * 21
+r = requests.post(BASE + f"/api/agent/commands/{cmd[0]}/result", headers=agent_headers(ta),
+                  json={"ok": True, "result": {"username": "assistenza_abc123", "password": SECRET}})
+dump = "\n".join(str(row) for t in ("commands", "plants", "settings") for row in db.execute(f"SELECT * FROM {t}"))
+check(SECRET not in dump and SECRET in admin.get(BASE + f"/impianti/{pa}").text,
+      "amministratore: la password si vede in dashboard ma non viene mai salvata nel database")
+check(SECRET not in let.get(BASE + f"/impianti/{pa}").text and SECRET not in admin.get(BASE + f"/impianti/{pb}").text,
+      "amministratore: la password non si vede col ruolo lettura né nella pagina di un altro impianto")
+r = requests.post(BASE + f"/api/agent/commands/{cmd[0]}/result", headers=agent_headers(tb),
+                  json={"ok": True, "result": {"username": "assistenza_evil", "password": "A" * 24}})
+check(r.status_code == 404, "amministratore: un altro impianto non può inserire credenziali al posto dell'agente giusto")
+report_a({"active": False})
+check(SECRET not in admin.get(BASE + f"/impianti/{pa}").text, "amministratore: chiuso l'accesso, la password sparisce subito dalla dashboard")
+report_a({"active": True, "username": "<script>x</script>", "until": "x"})
+check("<script>x" not in admin.get(BASE + f"/impianti/{pa}").text, "amministratore: dati strani dall'agente non finiscono nella pagina")
+report_a({"active": False})
+
 # ---------------------------------------------------------------- moduli della dashboard
 def safe_status(fn):
     try:

@@ -62,6 +62,24 @@ proprio token, token salvati solo come hash, query SQL sempre parametrizzate, es
 nei template della dashboard, reindirizzamento dopo il login limitato a percorsi interni, sessione
 non più valida dopo la disattivazione dell'utente.
 
+## Accesso amministratore temporaneo (dal server 0.2.7 e dall'agente 0.1.8)
+
+È la funzione più delicata: un amministratore di Home Assistant può modificare tutto. Le difese:
+
+- il permesso lo dà **solo il cliente** dal pannello, con la durata che sceglie; il server può solo chiederlo,
+  e un comando `admin_password` senza permesso viene rifiutato dall'agente;
+- l'utente HA viene **ricreato a ogni richiesta di password**: password nuova e sessioni precedenti chiuse;
+- la password non viene mai salvata: né dall'agente, né nel database del server (solo in memoria, 15 minuti),
+  e non è visibile al ruolo lettura;
+- la **scadenza la controlla l'agente**, anche se il server è spento o compromesso; l'utente viene cancellato
+  anche quando l'impianto viene scollegato e quando l'add-on viene arrestato o disinstallato;
+- senza scadenza: utente cancellato dopo 30 giorni senza richieste di password e promemoria al cliente ogni 30 giorni;
+- il cliente riceve una notifica a ogni ingresso dell'installatore.
+
+Rischio che resta: chi controlla il server dell'installatore **mentre** un accesso è concesso può chiedere
+una password e ottenere un amministratore su quell'impianto (il cliente ne riceve notifica). Per questo il
+server va protetto come indicato sotto, e conviene concedere durate brevi.
+
 ## Da sapere / non coperto
 
 - **Sessioni**: il cookie è firmato, non salvato sul server. Il logout cancella il cookie dal browser,

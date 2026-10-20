@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import struct
+import uuid
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -55,6 +56,27 @@ WS_RESULTS = {
 }
 
 
+# Utenti di Home Assistant creati dall'agente (accesso amministratore). GET /fake/users per i test.
+USERS = {}
+
+
+def ws_users(msg):
+    t = msg["type"]
+    if t == "config/auth/create":
+        uid = uuid.uuid4().hex
+        USERS[uid] = {"id": uid, "name": msg.get("name"), "group_ids": msg.get("group_ids"),
+                      "local_only": msg.get("local_only"), "username": None, "password": None}
+        return {"user": {"id": uid, "name": msg.get("name")}}
+    if t == "config/auth_provider/homeassistant/create":
+        if msg.get("user_id") not in USERS or any(u["username"] == msg.get("username") for u in USERS.values()):
+            return None
+        USERS[msg["user_id"]].update(username=msg.get("username"), password=msg.get("password"))
+        return {}
+    if t == "config/auth/delete":
+        return {} if USERS.pop(msg.get("user_id"), None) else None
+    return None
+
+
 def ws_send(sock, obj):
     data = json.dumps(obj).encode()
     head = bytes([0x81]) + (bytes([len(data)]) if len(data) < 126 else bytes([126]) + struct.pack("!H", len(data)))
@@ -102,7 +124,7 @@ class H(BaseHTTPRequestHandler):
                 msg = ws_recv(s)
             except (ConnectionError, OSError, ValueError):
                 break
-            result = WS_RESULTS.get(msg.get("type"))
+            result = ws_users(msg) if msg.get("type", "").startswith("config/auth") else WS_RESULTS.get(msg.get("type"))
             if result is not None:
                 ws_send(s, {"id": msg["id"], "type": "result", "success": True, "result": result})
             else:
@@ -112,6 +134,9 @@ class H(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/core/websocket" and self.headers.get("Upgrade", "").lower() == "websocket":
             return self.websocket()
+        if self.path == "/fake/users":  # solo per i test: utenti creati dall'agente
+            body = json.dumps(list(USERS.values())).encode()
+            self.send_response(200); self.end_headers(); self.wfile.write(body); return
         if self.headers.get("Authorization") != "Bearer test-token" or self.path not in ROUTES:
             self.send_response(401 if self.path in ROUTES else 404); self.end_headers(); return
         body = json.dumps(ROUTES[self.path]).encode()
