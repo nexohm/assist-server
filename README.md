@@ -44,6 +44,10 @@ ogni cliente ha un **add-on agente** sul proprio Home Assistant. Il cliente non 
   "agente da aggiornare" sugli impianti con un agente vecchio (controllo su GitHub ogni 6 ore, `UPDATE_CHECK=0` per disattivarlo)
 - **conferme animate**: ogni salvataggio mostra un avviso con spunta (o una X rossa se qualcosa non va) e i
   pulsanti mostrano un indicatore mentre lavorano
+- panoramica con **caselle cliccabili** (offline, critici, da controllare, ticket aperti) e per ogni impianto
+  lo stato, se è **online** e se il cliente lo tiene **collegato** (accesso remoto attivo)
+- **modifica ed eliminazione** di impianti e clienti (eliminare è riservato all'amministratore e chiede di riscrivere il nome)
+- pulsanti per **copiare** codice di abbinamento e indirizzo del server
 
 **Agente (add-on)**
 - nessuna dipendenza esterna: solo Python standard
@@ -57,6 +61,8 @@ ogni cliente ha un **add-on agente** sul proprio Home Assistant. Il cliente non 
   e, a scelta, sul telefono (app companion o altri servizi `notify`), con apertura diretta del pannello
 - **pulizia delle richieste chiuse** nel pannello (dopo 7/30/90 giorni o tenendo le ultime N); lo storico resta sul server
 - **entità escluse**: il cliente decide cosa l'installatore non deve controllare (anche con `*`, es. `light.giardino_*`)
+  oppure fa controllare solo le entità con certe **etichette** di Home Assistant
+- pannello diviso in **schede** (Richieste, Impianto, Preferenze)
 
 ## Installazione del server (per l'installatore)
 

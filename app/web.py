@@ -1,6 +1,8 @@
 """Dashboard web dell'installatore."""
 import asyncio
+import hashlib
 import json
+import logging
 import os
 import re
 import secrets
@@ -18,6 +20,7 @@ from .agent_api import is_online, ring
 from .security import (ROLE_LABELS, ROLES, can, hash_password, new_pair_code, new_setup_code,
                        verify_password, DUMMY_HASH)
 
+log = logging.getLogger("web")
 templates = Jinja2Templates(directory=os.path.join(os.path.dirname(__file__), "templates"))
 
 ALLOWED_COMMANDS = {
@@ -57,12 +60,28 @@ def ago(value):
     return f"{s // 86400} g fa"
 
 
+STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
+_asset_versions = {}
+
+
+def asset(name):
+    """Indirizzo di un file statico con l'impronta del contenuto (?v=...): dopo un aggiornamento
+    il browser scarica per forza la versione nuova invece di usare quella in cache."""
+    if name not in _asset_versions:
+        try:
+            with open(os.path.join(STATIC_DIR, name), "rb") as f:
+                _asset_versions[name] = hashlib.sha256(f.read()).hexdigest()[:10]
+        except OSError:
+            _asset_versions[name] = "0"
+    return f"/static/{name}?v={_asset_versions[name]}"
+
+
 templates.env.filters["ts"] = fmt_ts
 templates.env.filters["ago"] = ago
 templates.env.globals.update(agent_outdated=updates.agent_outdated, latest_agent=updates.latest_agent,
                              TICKET_STATUS=TICKET_STATUS, COMMAND_STATUS=COMMAND_STATUS,
                              ROLE_LABELS=ROLE_LABELS, ALLOWED_COMMANDS=ALLOWED_COMMANDS, can=can,
-                             is_online=is_online)
+                             is_online=is_online, asset=asset)
 
 
 def current_user(request: Request):
@@ -329,6 +348,17 @@ async def logout(request: Request):
 
 # ---------- panoramica ----------
 
+def remote_access(p):
+    """Il cliente consente l'accesso remoto (e non è scaduto)?"""
+    if not p.get("consent"):
+        return False
+    until = db.parse_ts(p.get("consent_until"))
+    return not (until and until < datetime.now(timezone.utc))
+
+
+templates.env.globals["remote_access"] = remote_access
+
+
 def plant_status(p):
     if p["revoked"]:
         return "revocato"
@@ -351,10 +381,18 @@ async def dashboard(request: Request):
     counts = defaultdict(int)
     for p in plants:
         counts[p["status"]] += 1
+    # Le caselle in alto filtrano la tabella (?stato=offline, critico, attenzione)
+    filtro = request.query_params.get("stato")
+    if filtro in ("offline", "critico", "attenzione"):
+        shown = [p for p in plants if p["status"] == filtro]
+    else:
+        filtro, shown = None, plants
     open_tickets = db.all_("SELECT t.*, p.name AS plant_name, c.name AS client_name FROM tickets t "
                            "JOIN plants p ON p.id = t.plant_id JOIN clients c ON c.id = p.client_id "
                            "WHERE t.status != 'chiuso' ORDER BY t.updated_at DESC LIMIT 10")
-    return render(request, "dashboard.html", plants=plants, counts=counts, open_tickets=open_tickets)
+    n_open = db.one("SELECT COUNT(*) AS n FROM tickets WHERE status != 'chiuso'")["n"]
+    return render(request, "dashboard.html", plants=shown, total=len(plants), counts=counts, filtro=filtro,
+                  open_tickets=open_tickets, n_open=n_open)
 
 
 # ---------- clienti ----------
@@ -396,6 +434,7 @@ async def client_detail(request: Request):
     plants = db.all_("SELECT * FROM plants WHERE client_id = ? ORDER BY name", client["id"])
     for p in plants:
         p["status"] = plant_status(p)
+        p["diag"] = sanitize.stored_diagnostics(p["last_diag"])
     return render(request, "client_detail.html", client=client, plants=plants)
 
 
@@ -414,6 +453,26 @@ async def client_edit(request: Request):
     db.run("UPDATE clients SET name = ?, email = ?, phone = ?, address = ?, notes = ? WHERE id = ?",
            *[data[f] for f in CLIENT_FIELDS], cid)
     return redirect(f"/clienti/{cid}", "Cliente aggiornato.", request)
+
+
+def _confirmed(form, name):
+    """Le eliminazioni chiedono di riscrivere il nome: un clic per sbaglio non basta."""
+    return " ".join((form.get("confirm_name") or "").split()).casefold() == " ".join((name or "").split()).casefold()
+
+
+@guard("settings")
+async def client_delete(request: Request):
+    cid = request.path_params["cid"]
+    client = db.one("SELECT * FROM clients WHERE id = ?", cid)
+    if not client:
+        return render(request, "error.html", message="Cliente non trovato.")
+    if not _confirmed(request.state.form, client["name"]):
+        return redirect(f"/clienti/{cid}/modifica", "Per eliminare il cliente scrivi il suo nome esatto.", request, error=True)
+    n = db.one("SELECT COUNT(*) AS n FROM plants WHERE client_id = ?", cid)["n"]
+    db.run("DELETE FROM clients WHERE id = ?", cid)   # impianti, ticket e comandi vanno via a cascata
+    log.info("Cliente %s «%s» eliminato da %s (%s impianti)", cid, client["name"], request.state.user["username"], n)
+    return redirect("/clienti", f"Cliente «{client['name']}» eliminato" + (f" insieme a {n} impianti." if n > 1 else
+                    " insieme al suo impianto." if n == 1 else "."), request)
 
 
 # ---------- impianti ----------
@@ -487,6 +546,29 @@ async def plant_revoke(request: Request):
     return redirect(f"/impianti/{pid}", "Accesso revocato: l'agente non potrà più collegarsi.", request)
 
 
+@guard("edit")
+async def plant_rename(request: Request):
+    pid = request.path_params["pid"]
+    name = " ".join(request.state.form.get("name", "").split())[:80]
+    if not name:
+        return redirect(f"/impianti/{pid}", "Il nome dell'impianto non può essere vuoto.", request, error=True)
+    db.run("UPDATE plants SET name = ? WHERE id = ?", name, pid)
+    return redirect(f"/impianti/{pid}", "Nome dell'impianto aggiornato.", request)
+
+
+@guard("settings")
+async def plant_delete(request: Request):
+    pid = request.path_params["pid"]
+    plant = db.one("SELECT * FROM plants WHERE id = ?", pid)
+    if not plant:
+        return render(request, "error.html", message="Impianto non trovato.")
+    if not _confirmed(request.state.form, plant["name"]):
+        return redirect(f"/impianti/{pid}", "Per eliminare l'impianto scrivi il suo nome esatto.", request, error=True)
+    db.run("DELETE FROM plants WHERE id = ?", pid)   # ticket e comandi vanno via a cascata
+    log.info("Impianto %s «%s» eliminato da %s", pid, plant["name"], request.state.user["username"])
+    return redirect(f"/clienti/{plant['client_id']}", f"Impianto «{plant['name']}» eliminato.", request)
+
+
 @guard("commands")
 async def plant_command(request: Request):
     pid = request.path_params["pid"]
@@ -494,8 +576,7 @@ async def plant_command(request: Request):
     name = request.state.form.get("name", "")
     if not plant or name not in ALLOWED_COMMANDS:
         return render(request, "error.html", message="Comando non valido.")
-    until = db.parse_ts(plant["consent_until"])
-    consent = plant["consent"] and not (until and until < datetime.now(timezone.utc))
+    consent = remote_access(plant)
     if name != "ping" and not consent:
         return redirect(f"/impianti/{pid}", "Il cliente ha sospeso l'accesso remoto: comando non inviato.", request, error=True)
     db.run("INSERT INTO commands(plant_id, name, args, created_by, created_at) VALUES(?, ?, '{}', ?, ?)",
@@ -732,6 +813,9 @@ routes = [
     Route("/impianti/{pid:int}/stato.json", plant_state_json),
     Route("/impianti/{pid:int}/codice", plant_pair_code, methods=["POST"]),
     Route("/impianti/{pid:int}/revoca", plant_revoke, methods=["POST"]),
+    Route("/impianti/{pid:int}/nome", plant_rename, methods=["POST"]),
+    Route("/impianti/{pid:int}/elimina", plant_delete, methods=["POST"]),
+    Route("/clienti/{cid:int}/elimina", client_delete, methods=["POST"]),
     Route("/impianti/{pid:int}/comandi", plant_command, methods=["POST"]),
     Route("/comandi/{cid:int}.json", command_detail),
     Route("/ticket", tickets_list),

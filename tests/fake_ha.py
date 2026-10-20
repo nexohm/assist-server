@@ -40,6 +40,21 @@ ROUTES = {
 NETWORK_URL = {"internal": "http://192.168.1.50:8123", "external": None, "cloud": "https://bianchi123.ui.nabu.casa"}
 
 
+# Etichette: "esterno" su un'entità, "importante" sul dispositivo della luce cucina
+WS_RESULTS = {
+    "network/url": NETWORK_URL,
+    "config/label_registry/list": [{"label_id": "importante", "name": "Importante"},
+                                   {"label_id": "esterno", "name": "Esterno"}],
+    "config/entity_registry/list_for_display": {"entity_categories": {}, "entities": [
+        {"ei": "light.cucina", "di": "dev_cucina"},
+        {"ei": "light.giardino", "lb": ["esterno"]},
+        {"ei": "sensor.porta_batteria", "di": "dev_porta"},
+    ]},
+    "config/device_registry/list": [{"id": "dev_cucina", "labels": ["importante"]},
+                                    {"id": "dev_porta", "labels": ["importante"]}],
+}
+
+
 def ws_send(sock, obj):
     data = json.dumps(obj).encode()
     head = bytes([0x81]) + (bytes([len(data)]) if len(data) < 126 else bytes([126]) + struct.pack("!H", len(data)))
@@ -81,14 +96,17 @@ class H(BaseHTTPRequestHandler):
         if auth.get("access_token") != "test-token":
             ws_send(s, {"type": "auth_invalid", "message": "Invalid access token"}); return
         ws_send(s, {"type": "auth_ok", "ha_version": "2026.10.1"})
-        try:
-            msg = ws_recv(s)
-        except ConnectionError:
-            return
-        if msg.get("type") == "network/url":
-            ws_send(s, {"id": msg["id"], "type": "result", "success": True, "result": NETWORK_URL})
-        else:
-            ws_send(s, {"id": msg["id"], "type": "result", "success": False, "error": {"message": "Unknown command."}})
+        s.settimeout(2)
+        while True:  # più comandi sulla stessa connessione, finché il client chiude
+            try:
+                msg = ws_recv(s)
+            except (ConnectionError, OSError, ValueError):
+                break
+            result = WS_RESULTS.get(msg.get("type"))
+            if result is not None:
+                ws_send(s, {"id": msg["id"], "type": "result", "success": True, "result": result})
+            else:
+                ws_send(s, {"id": msg["id"], "type": "result", "success": False, "error": {"message": "Unknown command."}})
         self.close_connection = True
 
     def do_GET(self):

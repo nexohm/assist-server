@@ -137,13 +137,13 @@ try:
     check("Passo domani mattina" in panel and "In lavorazione" in panel, "il cliente vede risposta e stato nel pannello")
     panel_post("rispondi", {"tid": t["id"], "text": "Perfetto grazie"})
     check("Perfetto grazie" in web.get(BASE + f"/ticket/{t['id']}").text, "risposta del cliente arriva in dashboard")
-    # #7 notifiche al cliente: la risposta dell'installatore arriva nella campanella di HA
+    # notifiche al cliente: la risposta dell'installatore arriva nella campanella di HA
     check(wait_for(lambda: any(c["domain"] == "persistent_notification" and "Passo domani mattina" in c["data"].get("message", "")
                                for c in ha_calls()), 40, 0.5), "notifica al cliente nella campanella di HA (risposta installatore)")
     pn = [c for c in ha_calls() if c["domain"] == "persistent_notification"][0]["data"]
     check(pn["title"].startswith("Rossi Impianti") and pn["notification_id"].startswith("assistenza_ticket_"),
           "notifica con nome installatore e id per richiesta")
-    panel = requests.get(PANEL).text
+    panel = requests.get(PANEL + "?s=preferenze").text
     check("App sul telefono: pixel 7" in panel and "telegram casa" in panel and "send message" not in panel,
           "pannello: servizi notify di HA proposti al cliente")
     pc = re.search(r'name="csrf" value="([^"]+)"', panel).group(1)
@@ -160,21 +160,25 @@ try:
           "notifica al cliente quando la richiesta viene chiusa")
     msg = [c for c in ha_calls()[n0:] if c["domain"] == "persistent_notification"][-1]["data"]["message"]
     check("Tapparella soggiorno ferma" in msg, "testo della notifica corretto")
-    # #5 richieste chiuse: nasconde quelle oltre i limiti scelti dal cliente
+    # richieste chiuse: nasconde quelle oltre i limiti scelti dal cliente
     db.execute("UPDATE tickets SET updated_at='2026-01-01T00:00:00+00:00' WHERE id=?", (t["id"],)); db.commit()
     panel = requests.get(PANEL).text
     check("Tapparella soggiorno ferma" in panel, "richiesta chiusa visibile con le impostazioni predefinite")
     pc = re.search(r'name="csrf" value="([^"]+)"', panel).group(1)
-    r = requests.post(PANEL + "richieste", data={"csrf": pc, "days": "30", "max_closed": ""})
+    r = requests.post(PANEL + "richieste", data={"csrf": pc, "days": "30", "max_closed": ""}, allow_redirects=False)
+    check(r.status_code == 303 and r.headers["Location"] == "./?s=preferenze#lista", "pannello: dopo il salvataggio torna alla sezione usata")
+    r = requests.get(PANEL + "?s=richieste")
     check("Tapparella soggiorno ferma" not in r.text and "1 richiesta chiusa nascosta" in r.text and "storico" in r.text,
           "richieste chiuse più vecchie di 30 giorni nascoste al cliente")
     check(db.execute("SELECT COUNT(*) FROM tickets WHERE id=?", (t["id"],)).fetchone()[0] == 1, "l'installatore conserva lo storico")
     requests.post(PANEL + "richieste", data={"csrf": pc, "days": "", "max_closed": ""})
-    # #1 entità escluse dal cliente
-    panel = requests.get(PANEL).text
+    # entità escluse dal cliente
+    panel = requests.get(PANEL + "?s=impianto").text
     check("Cosa controlla l" in panel and "light.giardino" in panel and "cover.soggiorno" in panel, "pannello: entità segnalate proposte")
     r = requests.post(PANEL + "escludi", data={"csrf": pc, "entity": "light.giardino"})
     check('class="toast ok"' in r.text and "non verrà più controllata" in r.text, "esclusione di un'entità con conferma")
+    check("?s=impianto" in r.url and r.history and r.history[0].headers["Location"].endswith("#entita"),
+          "dopo l'esclusione la pagina resta sulla lista")
     r = requests.post(PANEL + "escludi", data={"csrf": pc, "entity": "COVER.*"})
     r = requests.post(PANEL + "escludi", data={"csrf": pc, "entity": "javascript:alert(1)"})
     check('class="toast err"' in r.text and "Nome non valido" in r.text, "nome entità non valido rifiutato (X rossa)")
@@ -190,6 +194,25 @@ try:
         requests.post(PANEL + "includi", data={"csrf": pc, "entity": e})
     check(wait_for(lambda: (json.loads(db.execute("SELECT last_diag FROM plants WHERE id=?", (pid,)).fetchone()["last_diag"])
                             .get("summary", {}).get("unavailable") == 2), 40, 0.5), "entità di nuovo controllate")
+    # pannello a schede
+    tabs = requests.get(PANEL).text
+    check('class="tabs"' in tabs and "./?s=impianto" in tabs and "./?s=preferenze" in tabs and "Nuova richiesta" in tabs
+          and "Cosa controlla" not in tabs and "Notifiche" not in tabs, "pannello diviso in schede (Richieste / Impianto / Preferenze)")
+    # controlla solo le entità con un'etichetta (sull'entità o sul suo dispositivo)
+    imp = requests.get(PANEL + "?s=impianto").text
+    check("Importante" in imp and "Esterno" in imp, "pannello: etichette di HA proposte")
+    r = requests.post(PANEL + "etichette", data={"csrf": pc, "label": ["importante", "inventata"]})
+    check('class="toast ok"' in r.text and "Importante" in r.text, "filtro per etichetta salvato")
+    def only_label_diag():
+        d = json.loads(db.execute("SELECT last_diag FROM plants WHERE id=?", (pid,)).fetchone()["last_diag"] or "{}")
+        return d if d.get("summary", {}).get("excluded") == 7 else None
+    d = wait_for(only_label_diag, 40, 0.5)
+    check(d and d["summary"]["low_battery"] == 1 and d["summary"]["unavailable"] == 0 and "cover.soggiorno" not in json.dumps(d),
+          "solo le entità con l'etichetta (anche del dispositivo) vengono controllate")
+    check(json.load(open(f"{S}/agentdata/state.json"))["only_labels"] == ["importante"], "etichette inventate ignorate")
+    requests.post(PANEL + "etichette", data={"csrf": pc, "reset": "1"})
+    check(wait_for(lambda: (json.loads(db.execute("SELECT last_diag FROM plants WHERE id=?", (pid,)).fetchone()["last_diag"])
+                            .get("summary", {}).get("excluded") in (0, None)), 40, 0.5), "filtro per etichette tolto")
     time.sleep(1)
     msgs = tg_messages()
     check(any("Nuovo ticket" in m and "Tapparella soggiorno ferma" in m and "Famiglia Bianchi" in m for m in msgs),
@@ -230,7 +253,7 @@ try:
     panel_post("consenso", {"enabled": "1", "durata": "4h"})
     check(wait_for(lambda: db.execute("SELECT consent_until FROM plants WHERE id=?", (pid,)).fetchone()["consent_until"], 10, 0.2),
           "accesso a tempo (4 ore): il server riceve la scadenza")
-    check("Accesso remoto fino al" in web.get(BASE + f"/impianti/{pid}").text and "fino al" in requests.get(PANEL).text,
+    check("Accesso remoto fino al" in web.get(BASE + f"/impianti/{pid}").text and "fino al" in requests.get(PANEL + "?s=impianto").text,
           "scadenza visibile in dashboard e nel pannello del cliente")
     panel_post("consenso", {"enabled": "0"})
     panel_post("consenso", {"enabled": "1", "durata": "sempre"})
@@ -282,13 +305,48 @@ try:
     check(requests.post(BASE + "/api/agent/report", json={}, headers={"X-Agent-Protocol": "9"}).status_code == 426, "protocollo sbagliato -> 426")
     check(requests.post(BASE + "/api/agent/pair", json={"code": code}).status_code == 404, "codice già usato non riutilizzabile")
 
+    # dashboard: CSS in cache, stato online, caselle cliccabili
+    home = web.get(BASE + "/").text
+    check(re.search(r'/static/style\.css\?v=[0-9a-f]{10}', home) and re.search(r'/static/app\.js\?v=[0-9a-f]{10}', home),
+          "CSS e JS con impronta: niente versioni vecchie in cache dopo un aggiornamento")
+    check('class="pill on" title="L\'agente è in contatto con il server">online' in home and ">collegato<" in home,
+          "panoramica: impianto online e collegato")
+    check('href="/?stato=offline"' in home and 'href="/ticket?stato=aperti"' in home, "caselle della panoramica cliccabili")
+    fp = web.get(BASE + "/?stato=critico").text
+    check("Impianti · critici" in fp and "mostra tutti" in fp and fp.count('class="pstate"') == sum(
+          1 for _ in re.finditer(r'badge s-critico', fp)), "filtro della panoramica per stato")
+
     # 11. revoca
     page = web.get(BASE + f"/impianti/{pid}").text
     web.post(BASE + f"/impianti/{pid}/revoca", data={"csrf": csrf(page)})
     check(wait_for(lambda: json.load(open(f"{S}/agentdata/state.json"))["connection"] == "revocato", 40, 0.5), "revoca rilevata dall'agente")
-    check("Collegamento revocato" in requests.get(PANEL).text and "Chiedi assistenza" not in requests.get(PANEL).text, "il pannello mostra la revoca al cliente")
+    check("Collegamento revocato" in requests.get(PANEL).text and "Nuova richiesta" not in requests.get(PANEL).text, "il pannello mostra la revoca al cliente")
     st = json.load(open(f"{S}/agentdata/state.json"))
     check(st["token"] is None and st["connection"] == "revocato", "token cancellato dall'agente")
+
+    # copia del codice, modifica ed eliminazione di impianti e clienti
+    page = web.get(BASE + "/clienti/nuovo").text
+    r = web.post(BASE + "/clienti/nuovo", data={"csrf": csrf(page), "name": "Cliente Da Eliminare"})
+    cid2 = int(re.search(r"/clienti/(\d+)", r.url).group(1))
+    r = web.post(BASE + f"/clienti/{cid2}/impianti", data={"csrf": csrf(r.text), "name": "Garage"})
+    pid2 = int(re.search(r"/impianti/(\d+)", r.url).group(1))
+    check('data-copy="' in r.text and "Copia codice" in r.text, "pulsante per copiare il codice di abbinamento")
+    r = web.post(BASE + f"/impianti/{pid2}/nome", data={"csrf": csrf(r.text), "name": "  Box   auto "})
+    check("impianto aggiornato" in r.text and db.execute("SELECT name FROM plants WHERE id=?", (pid2,)).fetchone()[0] == "Box auto",
+          "impianto rinominato")
+    db.execute("INSERT INTO tickets(plant_id,title,created_at,updated_at) VALUES(?,?,?,?)", (pid2, "Da cancellare", "2026-01-01", "2026-01-01")); db.commit()
+    r = web.post(BASE + f"/impianti/{pid2}/elimina", data={"csrf": csrf(r.text), "confirm_name": "garage"})
+    check('class="toast err"' in r.text and db.execute("SELECT COUNT(*) FROM plants WHERE id=?", (pid2,)).fetchone()[0] == 1,
+          "eliminazione rifiutata se il nome non corrisponde")
+    r = web.post(BASE + f"/impianti/{pid2}/elimina", data={"csrf": csrf(r.text), "confirm_name": "box auto"})
+    check("eliminato" in r.text and db.execute("SELECT COUNT(*) FROM plants WHERE id=?", (pid2,)).fetchone()[0] == 0
+          and db.execute("SELECT COUNT(*) FROM tickets WHERE plant_id=?", (pid2,)).fetchone()[0] == 0,
+          "impianto eliminato con i suoi ticket")
+    page = web.get(BASE + f"/clienti/{cid2}/modifica").text
+    check("Elimina cliente" in page, "pagina modifica cliente con eliminazione")
+    r = web.post(BASE + f"/clienti/{cid2}/elimina", data={"csrf": csrf(page), "confirm_name": "Cliente Da Eliminare"})
+    check("eliminato" in r.text and db.execute("SELECT COUNT(*) FROM clients WHERE id=?", (cid2,)).fetchone()[0] == 0,
+          "cliente eliminato")
 finally:
     agent.terminate()
 print(f"\nTUTTI I {ok_count} CONTROLLI SUPERATI")

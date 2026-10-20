@@ -150,6 +150,17 @@ check(refused(let, "/utenti", "/", {"username": "x_lettore", "password": "passwo
 check(refused(tec, "/utenti", "/", {"username": "x_tecnico", "password": "passwordlunga1", "role": "admin"}), "ruolo tecnico: non può creare amministratori")
 check(refused(tec, "/impostazioni", "/", {"company_name": "Cambiata", "brand_color": "#000000", "public_url": "https://evil.example"}),
       "ruolo tecnico: non può cambiare le impostazioni")
+# 0.2.7: eliminazioni solo per l'amministratore, e solo riscrivendo il nome
+counts = lambda: db.execute("SELECT (SELECT COUNT(*) FROM clients), (SELECT COUNT(*) FROM plants)").fetchone()
+cid_a, pname_a = db.execute("SELECT client_id, name FROM plants WHERE id = ?", (pa,)).fetchone()
+cname_a = db.execute("SELECT name FROM clients WHERE id = ?", (cid_a,)).fetchone()[0]
+before = tuple(counts())
+form_post(tec, f"/impianti/{pa}/elimina", f"/impianti/{pa}", {"confirm_name": pname_a})
+form_post(tec, f"/clienti/{cid_a}/elimina", f"/clienti/{cid_a}", {"confirm_name": cname_a})
+form_post(let, f"/impianti/{pa}/nome", f"/impianti/{pa}", {"name": "rinominato da lettore"})
+admin.post(BASE + f"/clienti/{cid_a}/elimina", data={"confirm_name": cname_a, "csrf": "sbagliato"})
+check(tuple(counts()) == before and db.execute("SELECT name FROM plants WHERE id = ?", (pa,)).fetchone()[0] == pname_a,
+      "eliminazioni: vietate a tecnico e lettore, e senza token CSRF; il lettore non rinomina")
 r = requests.post(BASE + "/clienti/nuovo", data={"name": "anonimo"}, allow_redirects=False)
 check(r.status_code in (302, 303) and "/login" in r.headers.get("location", ""), "senza login: le pagine riservate rimandano al login")
 

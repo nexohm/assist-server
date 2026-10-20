@@ -171,6 +171,40 @@ weird = ["javascript:alert(1)", "sensor.x\"><b>", "*", "a" * 70 + ".b", "../etc.
 check(not any(ENTITY_PATTERN.fullmatch(w) for w in weird) and ENTITY_PATTERN.fullmatch("vacuum.robot_*"),
       "pannello: i nomi di entità da escludere sono validati")
 
+# ---------------------------------------------------------------- 0.1.8: schede ed etichette
+before = list(agent.state.get("only_labels") or [])
+req = urllib.request.Request(f"http://127.0.0.1:{pport}/etichette", data=b"label=importante",
+                             method="POST", headers={"Content-Type": "application/x-www-form-urlencoded"})
+try:
+    urllib.request.urlopen(req, timeout=5)
+except Exception:  # noqa: BLE001
+    pass
+check(agent.state.get("only_labels") == before, "pannello: un altro sito non può cambiare il filtro per etichette (CSRF)")
+
+page = urllib.request.urlopen(f"http://127.0.0.1:{pport}/?s=%3Cscript%3Ealert(1)%3C/script%3E", timeout=5).read().decode()
+check("<script" not in page, "pannello: il parametro della scheda non finisce nella pagina")
+
+# Filtro per etichette attivo ma registro di HA illeggibile: niente controllo piuttosto che
+# mandare all'installatore entità che il cliente ha escluso.
+from agent import ha as ha_mod  # noqa: E402
+agent.state.update(only_labels=["importante"], last_diag=None)
+orig = ha_mod.entity_labels
+def _broken():
+    raise ha_mod.HAError("registro non disponibile")
+ha_mod.entity_labels = _broken
+try:
+    agent.fresh_diagnostics()
+    leaked = True
+except ha_mod.HAError:
+    leaked = False
+except Exception:  # noqa: BLE001
+    leaked = agent.state.get("last_diag") is not None
+finally:
+    ha_mod.entity_labels = orig
+    agent.state.update(only_labels=[])
+check(not leaked and agent.state.get("last_diag") is None,
+      "etichette: se il filtro non si può applicare la diagnostica non parte (nessuna entità esclusa inviata)")
+
 bad = [r for r in results if not r[0]]
 print(f"\n{len(results) - len(bad)} difesi, {len(bad)} vulnerabili su {len(results)} controlli")
 sys.exit(1 if bad else 0)

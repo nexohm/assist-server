@@ -1,11 +1,11 @@
 {% extends "base.html" %}
-{% from "_macros.html" import status_badge, diagnostics %}
+{% from "_macros.html" import status_badge, diagnostics, plant_state %}
 {% block title %}{{ plant.client_name }} · {{ plant.name }}{% endblock %}
 {% block content %}
 <div class="head">
   <div><p class="muted small" style="margin:0"><a href="/clienti">Clienti</a> / <a href="/clienti/{{ plant.client_id }}">{{ plant.client_name }}</a> /</p>
     <h1>{{ plant.name }}</h1>
-    <div class="row small"><span id="st">{{ status_badge(plant.status) }}</span>
+    <div class="row small"><span id="st">{{ plant_state(plant) }}</span>
       <span class="muted">Ultimo contatto: <span id="seen">{{ plant.last_seen | ago }}</span></span>
       {% if plant.paired_at and not plant.consent %}<span class="badge s-attenzione">Accesso remoto sospeso dal cliente</span>
       {% elif plant.paired_at and plant.consent_until %}<span class="badge s-in_attesa">Accesso remoto fino al {{ plant.consent_until | ts }}</span>{% endif %}</div>
@@ -24,13 +24,17 @@
 <div class="card" style="margin-bottom:16px">
   <div class="grid g2" style="align-items:center">
     <div class="pair"><p class="muted" style="margin:0">Codice di abbinamento</p><div class="code">{{ plant.pair_code }}</div>
-      <p class="muted small" style="margin:0">valido fino al {{ plant.pair_expires | ts }}</p></div>
+      <button type="button" class="btn ghost copy" data-copy="{{ plant.pair_code }}">Copia codice</button>
+      <p class="muted small" style="margin:8px 0 0">valido fino al {{ plant.pair_expires | ts }}</p></div>
     <div>
       <h2>Come collegare l'impianto</h2>
       <ol style="margin:0;padding-left:20px">
         <li>Su Home Assistant del cliente installa l'add-on <b>Agente Assistenza</b>.</li>
         <li>Nella scheda <i>Configurazione</i> inserisci:<br>
-          indirizzo server: <code>{{ public_url }}</code><br>codice: <code>{{ plant.pair_code }}</code></li>
+          indirizzo server: <code>{{ public_url }}</code>
+          <button type="button" class="link-btn copy" data-copy="{{ public_url }}">copia</button><br>
+          codice: <code>{{ plant.pair_code }}</code>
+          <button type="button" class="link-btn copy" data-copy="{{ plant.pair_code }}">copia</button></li>
         <li>Avvia l'add-on: in pochi secondi questa pagina diventa verde.</li>
       </ol>
     </div>
@@ -99,6 +103,25 @@
           <input type="hidden" name="csrf" value="{{ csrf }}"><button class="btn danger small">Revoca accesso</button></form>
         {% endif %}
       </div>
+      {% endif %}
+      {% if can(user, 'edit') %}
+      <details class="manage">
+        <summary>Modifica o elimina l'impianto</summary>
+        <form method="post" action="/impianti/{{ plant.id }}/nome" class="row">
+          <input type="hidden" name="csrf" value="{{ csrf }}">
+          <input class="grow" name="name" value="{{ plant.name }}" maxlength="80" required aria-label="Nome impianto">
+          <button class="btn ghost small">Rinomina</button>
+        </form>
+        {% if can(user, 'settings') %}
+        <form method="post" action="/impianti/{{ plant.id }}/elimina" class="danger-zone">
+          <input type="hidden" name="csrf" value="{{ csrf }}">
+          <p class="small">Elimina l'impianto con tutti i suoi ticket e comandi. L'agente del cliente verrà scollegato.
+            Non si può annullare: per confermare scrivi <b>{{ plant.name }}</b>.</p>
+          <div class="row"><input class="grow" name="confirm_name" autocomplete="off" required aria-label="Nome dell'impianto da eliminare">
+            <button class="btn danger small">Elimina impianto</button></div>
+        </form>
+        {% endif %}
+      </details>
       {% endif %}
     </div>
   </div>
