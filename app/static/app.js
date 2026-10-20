@@ -7,6 +7,12 @@ document.addEventListener("submit", function (e) {
   if (msg && !window.confirm(msg)) e.preventDefault();
 });
 
+// Pulsanti con conferma: <button data-confirm="Sei sicuro?">
+document.addEventListener("click", function (e) {
+  const btn = e.target.closest && e.target.closest("button[data-confirm]");
+  if (btn && !window.confirm(btn.getAttribute("data-confirm"))) e.preventDefault();
+});
+
 // Pagina impianto: si aggiorna da sola quando cambia lo stato dell'impianto o dei comandi.
 (function () {
   const el = document.getElementById("plant-live");

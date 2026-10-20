@@ -41,7 +41,7 @@
     <div class="row" style="margin-top:16px">
       <button class="btn" name="azione" value="salva">Salva</button>
       <button class="btn ghost" name="azione" value="prova">Invia prova</button>
-      {% if tg_token_set %}<button class="btn danger" name="azione" value="rimuovi" onclick="return confirm('Disattivare le notifiche Telegram?')">Disattiva</button>{% endif %}
+      {% if tg_token_set %}<button class="btn danger" name="azione" value="rimuovi" data-confirm="Disattivare le notifiche Telegram?">Disattiva</button>{% endif %}
     </div>
   </form>
 </div>

@@ -14,6 +14,7 @@ from starlette.routing import Mount
 from starlette.staticfiles import StaticFiles
 
 from . import agent_api, db, notify, web
+from .middleware import BodyLimit, SecurityHeaders
 
 VERSION = os.environ.get("SUITE_VERSION", "dev")
 
@@ -34,6 +35,7 @@ def secret_key() -> str:
 
 db.migrate()
 web.templates.env.globals["VERSION"] = VERSION
+web.ensure_setup_code()
 
 @asynccontextmanager
 async def lifespan(app):
@@ -52,6 +54,8 @@ app = Starlette(
         Mount("/static", StaticFiles(directory=os.path.join(os.path.dirname(__file__), "static")), name="static"),
     ],
     middleware=[
+        Middleware(BodyLimit),
+        Middleware(SecurityHeaders),
         Middleware(
             SessionMiddleware,
             secret_key=secret_key(),

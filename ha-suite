@@ -54,6 +54,14 @@ case "${1:-aiuto}" in
   riavvia)
     dc up -d
     ;;
+  codice)
+    # Codice di installazione per la prima configurazione dal browser
+    if code=$(dc exec -T suite cat /data/setup-code.txt 2>/dev/null); then
+      echo "Codice di installazione: $code"
+    else
+      echo "Nessun codice: la configurazione iniziale è già stata fatta."
+    fi
+    ;;
   versione)
     dc exec -T suite printenv SUITE_VERSION || echo "server non in esecuzione"
     ;;
@@ -106,6 +114,7 @@ Uso: ./ha-suite <comando>
   versione     mostra la versione del server in esecuzione
   backup       salva tutti i dati in ./backup (tiene gli ultimi 14)
   ripristina   ripristina un backup:  ./ha-suite ripristina backup/<file>.tar.gz
+  codice       mostra il codice di installazione (solo prima della configurazione iniziale)
   riavvia      applica modifiche al file .env
   disinstalla  rimuove i container (i dati restano)
 HELP

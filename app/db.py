@@ -114,10 +114,15 @@ def now() -> str:
 
 
 def parse_ts(value):
-    try:
-        return datetime.fromisoformat(value) if value else None
-    except (TypeError, ValueError):
+    """Data ISO -> datetime con fuso orario (UTC se manca), None se non valida.
+    Le date possono arrivare dagli agenti: una data senza fuso non deve rompere i confronti."""
+    if not isinstance(value, str) or not value:
         return None
+    try:
+        ts = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
 
 
 def _connect():
@@ -192,6 +197,12 @@ def run(sql, *args) -> int:
     """Esegue una scrittura e restituisce l'id della riga inserita."""
     with connect() as c:
         return c.execute(sql, args).lastrowid
+
+
+def changed(sql, *args) -> int:
+    """Esegue una scrittura e restituisce quante righe ha modificato."""
+    with connect() as c:
+        return c.execute(sql, args).rowcount
 
 
 def get_setting(key, default=None):

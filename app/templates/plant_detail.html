@@ -92,10 +92,10 @@
       {% endif %}
       {% if can(user, 'edit') %}
       <div class="row" style="margin-top:16px">
-        <form class="inline" method="post" action="/impianti/{{ plant.id }}/codice" onsubmit="return confirm('Il collegamento attuale smetterà di funzionare. Continuare?')">
+        <form class="inline" method="post" action="/impianti/{{ plant.id }}/codice" data-confirm="Il collegamento attuale smetterà di funzionare. Continuare?">
           <input type="hidden" name="csrf" value="{{ csrf }}"><button class="btn ghost small">Nuovo codice</button></form>
         {% if not plant.revoked %}
-        <form class="inline" method="post" action="/impianti/{{ plant.id }}/revoca" onsubmit="return confirm('Revocare l\'accesso di questo impianto?')">
+        <form class="inline" method="post" action="/impianti/{{ plant.id }}/revoca" data-confirm="Revocare l'accesso di questo impianto?">
           <input type="hidden" name="csrf" value="{{ csrf }}"><button class="btn danger small">Revoca accesso</button></form>
         {% endif %}
       </div>
@@ -105,25 +105,6 @@
 </div>
 {% endblock %}
 {% block scripts %}
-<script>
-// La pagina si aggiorna da sola quando lo stato dell'impianto o dei comandi cambia.
-(function () {
-  const first = {{ {'status': plant.status, 'diag': plant.last_diag_at, 'cmds': commands | map(attribute='status') | list} | tojson }};
-  async function poll() {
-    try {
-      const r = await fetch('/impianti/{{ plant.id }}/stato.json', {credentials: 'same-origin'});
-      if (r.ok) {
-        const s = await r.json();
-        document.getElementById('seen').textContent = s.last_seen;
-        const cmds = s.commands.map(c => c.status);
-        if (s.status !== first.status || s.last_diag_at !== first.diag || JSON.stringify(cmds) !== JSON.stringify(first.cmds)) {
-          location.reload(); return;
-        }
-      }
-    } catch (e) {}
-    setTimeout(poll, 4000);
-  }
-  setTimeout(poll, 4000);
-})();
-</script>
+<div id="plant-live" hidden data-url="/impianti/{{ plant.id }}/stato.json"
+     data-state="{{ {'status': plant.status, 'diag': plant.last_diag_at, 'cmds': commands | map(attribute='status') | list} | tojson | forceescape }}"></div>
 {% endblock %}

@@ -17,6 +17,10 @@ def check(cond, msg):
 def csrf(html):
     return re.search(r'name="csrf" value="([^"]+)"', html).group(1)
 
+def panel_post(action, data):
+    """Modulo del pannello: ogni invio porta il token anti-CSRF letto dalla pagina."""
+    return requests.post(PANEL + action, data={"csrf": csrf(requests.get(PANEL).text), **data})
+
 def wait_for(fn, timeout=30, step=0.5):
     end = time.time() + timeout
     while time.time() < end:
@@ -28,7 +32,11 @@ def wait_for(fn, timeout=30, step=0.5):
 web = requests.Session()
 # 1. setup guidato
 r = web.get(BASE + "/setup")
-r = web.post(BASE + "/setup", data={"csrf": csrf(r.text), "company_name": "Rossi Impianti", "brand_color": "#1d4ed8",
+r0 = web.post(BASE + "/setup", data={"csrf": csrf(r.text), "company_name": "Pirata", "username": "pirata",
+                                      "password": "passwordpirata1", "password2": "passwordpirata1"})
+check("Codice di installazione errato" in r0.text, "setup senza codice di installazione rifiutato")
+setup_code = open(f"{S}/srvdata/setup-code.txt").read().strip()
+r = web.post(BASE + "/setup", data={"csrf": csrf(r.text), "setup_code": setup_code, "company_name": "Rossi Impianti", "brand_color": "#1d4ed8",
                                      "full_name": "Mario Rossi", "username": "mario", "password": "passwordsicura1", "password2": "passwordsicura1"})
 check("Panoramica" in r.text and "Rossi Impianti" in r.text, "setup completato e login automatico")
 check(web.get(BASE + "/setup").url.endswith("/login") or "Panoramica" in web.get(BASE + "/setup").text, "setup non ripetibile")
@@ -113,7 +121,7 @@ try:
     # 6. pannello cliente + ticket
     panel = requests.get(PANEL)
     check(panel.status_code == 200 and "Rossi Impianti" in panel.text and "Collegato" in panel.text, "pannello cliente con marchio installatore")
-    r = requests.post(PANEL + "ticket", data={"title": "Tapparella soggiorno ferma", "description": "Da ieri non sale più", "contact": "333 9998877"})
+    r = panel_post("ticket", {"title": "Tapparella soggiorno ferma", "description": "Da ieri non sale più", "contact": "333 9998877"})
     check("Richiesta inviata" in r.text, "cliente apre un ticket dal pannello")
     t = db.execute("SELECT * FROM tickets WHERE plant_id=?", (pid,)).fetchone()
     check(t and t["diagnostics"] and t["contact"] == "333 9998877", "ticket arrivato con diagnostica allegata")
@@ -122,7 +130,7 @@ try:
     web.post(BASE + f"/ticket/{t['id']}/rispondi", data={"csrf": csrf(tp), "text": "Passo domani mattina alle 9", "status": "in_lavorazione", "assigned_to": "1"})
     panel = requests.get(PANEL).text
     check("Passo domani mattina" in panel and "In lavorazione" in panel, "il cliente vede risposta e stato nel pannello")
-    requests.post(PANEL + "rispondi", data={"tid": t["id"], "text": "Perfetto grazie"})
+    panel_post("rispondi", {"tid": t["id"], "text": "Perfetto grazie"})
     check("Perfetto grazie" in web.get(BASE + f"/ticket/{t['id']}").text, "risposta del cliente arriva in dashboard")
     time.sleep(1)
     msgs = tg_messages()
@@ -151,19 +159,19 @@ try:
     check("deve iniziare" in r.text, "indirizzo Home Assistant non valido rifiutato")
 
     # 7. consenso
-    requests.post(PANEL + "consenso", data={"enabled": "0"})
+    panel_post("consenso", {"enabled": "0"})
     check(wait_for(lambda: db.execute("SELECT consent FROM plants WHERE id=?", (pid,)).fetchone()["consent"] == 0, 10, 0.2), "il cliente sospende l'accesso: il server lo sa")
     page = web.get(BASE + f"/impianti/{pid}").text
     check("sospeso dal cliente" in page, "dashboard mostra accesso sospeso")
     r = web.post(BASE + f"/impianti/{pid}/comandi", data={"csrf": csrf(page), "name": "run_diagnostics"})
     check("comando non inviato" in r.text, "diagnostica bloccata con consenso sospeso")
-    requests.post(PANEL + "consenso", data={"enabled": "1", "durata": "4h"})
+    panel_post("consenso", {"enabled": "1", "durata": "4h"})
     check(wait_for(lambda: db.execute("SELECT consent_until FROM plants WHERE id=?", (pid,)).fetchone()["consent_until"], 10, 0.2),
           "accesso a tempo (4 ore): il server riceve la scadenza")
     check("Accesso remoto fino al" in web.get(BASE + f"/impianti/{pid}").text and "fino al" in requests.get(PANEL).text,
           "scadenza visibile in dashboard e nel pannello del cliente")
-    requests.post(PANEL + "consenso", data={"enabled": "0"})
-    requests.post(PANEL + "consenso", data={"enabled": "1", "durata": "sempre"})
+    panel_post("consenso", {"enabled": "0"})
+    panel_post("consenso", {"enabled": "1", "durata": "sempre"})
     check(wait_for(lambda: (lambda r: r["consent"] == 1 and r["consent_until"] is None)(
           db.execute("SELECT consent, consent_until FROM plants WHERE id=?", (pid,)).fetchone()), 10, 0.2),
           "accesso senza scadenza")

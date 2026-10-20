@@ -33,6 +33,11 @@ def verify_password(password: str, stored: str) -> bool:
         return False
 
 
+# Hash di una password a caso: si verifica contro questo quando l'utente non esiste,
+# così il login impiega lo stesso tempo e non rivela quali nomi utente sono validi.
+DUMMY_HASH = hash_password(secrets.token_urlsafe(16))
+
+
 def new_token() -> str:
     return secrets.token_urlsafe(36)
 
@@ -44,6 +49,12 @@ def hash_token(token: str) -> str:
 def new_pair_code() -> str:
     raw = "".join(secrets.choice(PAIR_ALPHABET) for _ in range(8))
     return f"{raw[:4]}-{raw[4:]}"
+
+
+def new_setup_code() -> str:
+    """Codice di installazione del primo avvio: 12 caratteri, a gruppi di 4 (es. K7Q2-M9XA-3HPT)."""
+    raw = "".join(secrets.choice(PAIR_ALPHABET) for _ in range(12))
+    return f"{raw[:4]}-{raw[4:8]}-{raw[8:]}"
 
 
 def normalize_pair_code(code: str) -> str:

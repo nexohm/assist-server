@@ -24,14 +24,17 @@ ogni cliente ha un **add-on agente** sul proprio Home Assistant. Il cliente non 
 ## Cosa fa già (versione 0.2)
 
 **Server installatore**
-- configurazione guidata al primo avvio (nome azienda, colore, primo amministratore)
+- configurazione guidata al primo avvio (nome azienda, colore, primo amministratore), protetta da un
+  **codice di installazione** che si legge solo sul server (`sudo ha-suite codice`)
 - utenti con ruoli: amministratore, tecnico, sola lettura
 - clienti e impianti, codice di abbinamento monouso valido 24 ore
 - panoramica con impianti ordinati per gravità (offline → critici → da controllare)
 - pagina impianto con diagnostica, comandi remoti e storico, aggiornamento automatico
 - ticket con risposte, stato e assegnazione al tecnico, diagnostica allegata all'apertura
 - revoca dell'accesso di un impianto e nuovo abbinamento
-- sicurezza: password PBKDF2, token salvati solo come hash, protezione CSRF, blocco dopo 5 accessi falliti
+- sicurezza: password PBKDF2, token salvati solo come hash, protezione CSRF, blocco dei tentativi di accesso
+  per IP e per utente, Content-Security-Policy e intestazioni anti-clickjacking, dati degli agenti
+  sempre validati (vedi [docs/SECURITY.md](docs/SECURITY.md) e `tests/run_security.sh`)
 - **distribuito come immagine Docker già pronta** (amd64, arm64, armv7), installazione con un comando
 - copia di sicurezza automatica del database prima di ogni aggiornamento che ne cambia la struttura
 - **notifiche Telegram** all'installatore: nuovi ticket, risposte dei clienti, impianti offline/di nuovo online, stato critico
@@ -108,7 +111,8 @@ automatiche. Per fissare una versione invece di seguire gli aggiornamenti: `SUIT
 ```bash
 cd assist-server
 pip install -r requirements.txt requests
-tests/run_e2e.sh                       # prova completa: server + agente + finto HA, 44 controlli
+tests/run_e2e.sh                       # prova completa: server + agente + finto HA, 48 controlli
+tests/run_security.sh                  # test di sicurezza: 39 attacchi a server e add-on
 
 DATA_DIR=./data SECURE_COOKIES=0 python3 -m uvicorn app.main:app --port 8080   # solo dashboard
 

@@ -162,6 +162,12 @@ echo
 [[ "${ready:-0}" == 1 ]] || fail "il server non risponde. Controlla con: ha-suite log"
 
 bold "Installazione completata"
+setup_code=$(docker compose exec -T suite cat /data/setup-code.txt 2>/dev/null || true)
+if [[ -n "$setup_code" ]]; then
+  info "Codice di installazione:  $setup_code"
+  info "Ti verrà chiesto alla prima configurazione dal browser (per rivederlo: sudo ha-suite codice)."
+  echo
+fi
 if [[ "$MODE" == "https" ]]; then
   info "Apri  https://$DOMAIN  per la configurazione iniziale."
   info "Il primo accesso può richiedere qualche secondo: Caddy sta ottenendo il certificato."
