@@ -139,7 +139,10 @@ async def report(request: Request):
                json.dumps(diag), db.now(), plant["id"])
     pending = db.one("SELECT COUNT(*) AS n FROM commands WHERE plant_id = ? AND status = 'in_attesa'", plant["id"])
     # Nome e colore dell'installatore viaggiano a ogni rapporto: se cambiano, il pannello del cliente si aggiorna.
+    # Ultimo aggiornamento dei ticket dell'impianto: se cambia, l'agente li rilegge e avvisa il cliente.
+    last_ticket = db.one("SELECT MAX(updated_at) AS ts FROM tickets WHERE plant_id = ?", plant["id"])
     return JSONResponse({"ok": True, "pending_commands": pending["n"],
+                         "tickets_updated": last_ticket["ts"],
                          "server_name": db.get_setting("company_name", "Assistenza"),
                          "brand_color": db.get_setting("brand_color", "#0f766e")})
 

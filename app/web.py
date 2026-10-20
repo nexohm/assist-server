@@ -180,15 +180,28 @@ def render(request, name, **ctx):
         company=db.get_setting("company_name", "Assistenza"),
         brand_color=db.get_setting("brand_color", "#0f766e"),
         public_url=public_url(request),
-        flash=request.session.pop("flash", None),
+        flash=take_flash(request, ctx),
     )
     return templates.TemplateResponse(request, name, ctx)
 
 
-def redirect(url, flash=None, request=None):
+def redirect(url, flash=None, request=None, error=False):
+    """Reindirizza e mostra un messaggio (conferma con la spunta, oppure errore con la X)."""
     if flash and request is not None:
-        request.session["flash"] = flash
+        request.session["flash"] = {"text": flash, "error": bool(error)}
     return RedirectResponse(url, status_code=303)
+
+
+def take_flash(request, ctx):
+    """Messaggio da mostrare: quello salvato prima del reindirizzamento, oppure gli errori del modulo."""
+    flash = request.session.pop("flash", None)
+    if isinstance(flash, str):  # sessioni create da versioni precedenti
+        flash = {"text": flash, "error": False}
+    errors = ctx.get("errors")
+    if not flash and errors:
+        flash = {"text": errors[0] if len(errors) == 1 else "Controlla i dati inseriti: ci sono errori nel modulo.",
+                 "error": True}
+    return flash
 
 
 async def read_form(request: Request):
@@ -484,7 +497,7 @@ async def plant_command(request: Request):
     until = db.parse_ts(plant["consent_until"])
     consent = plant["consent"] and not (until and until < datetime.now(timezone.utc))
     if name != "ping" and not consent:
-        return redirect(f"/impianti/{pid}", "Il cliente ha sospeso l'accesso remoto: comando non inviato.", request)
+        return redirect(f"/impianti/{pid}", "Il cliente ha sospeso l'accesso remoto: comando non inviato.", request, error=True)
     db.run("INSERT INTO commands(plant_id, name, args, created_by, created_at) VALUES(?, ?, '{}', ?, ?)",
            plant["id"], name, request.state.user["id"], db.now())
     ring(plant["id"])
@@ -535,7 +548,7 @@ async def ticket_reply(request: Request):
     if assigned:
         if not assigned.isdigit() or not db.one("SELECT id FROM users WHERE id = ? AND active = 1 AND role != 'lettura'",
                                                 int(assigned)):
-            return redirect(f"/ticket/{tid}", "Utente da assegnare non valido.", request)
+            return redirect(f"/ticket/{tid}", "Utente da assegnare non valido.", request, error=True)
     ts = db.now()
     if text:
         u = request.state.user
@@ -611,9 +624,9 @@ async def user_password(request: Request):
     target = db.one("SELECT * FROM users WHERE id = ?", uid)
     new = request.state.form.get("password", "")
     if not target:
-        return redirect("/utenti", "Utente non trovato.", request)
+        return redirect("/utenti", "Utente non trovato.", request, error=True)
     if len(new) < MIN_PASSWORD:
-        return redirect("/utenti", f"La password deve avere almeno {MIN_PASSWORD} caratteri.", request)
+        return redirect("/utenti", f"La password deve avere almeno {MIN_PASSWORD} caratteri.", request, error=True)
     db.run("UPDATE users SET password_hash = ? WHERE id = ?", hash_password(new), uid)
     return redirect("/utenti", f"Password di {target['username']} reimpostata: comunicagliela e chiedigli di cambiarla.", request)
 
@@ -622,7 +635,7 @@ async def user_password(request: Request):
 async def user_toggle(request: Request):
     uid = request.path_params["uid"]
     if uid == request.state.user["id"]:
-        return redirect("/utenti", "Non puoi disattivare te stesso.", request)
+        return redirect("/utenti", "Non puoi disattivare te stesso.", request, error=True)
     db.run("UPDATE users SET active = 1 - active WHERE id = ?", uid)
     return redirect("/utenti", "Utente aggiornato.", request)
 
@@ -639,7 +652,7 @@ async def settings_page(request: Request):
             db.set_setting("brand_color", color)
         url = form.get("public_url", "").strip().rstrip("/")
         if url and not (url.startswith("https://") or url.startswith("http://")):
-            return redirect("/impostazioni", "L'indirizzo pubblico deve iniziare con https://", request)
+            return redirect("/impostazioni", "L'indirizzo pubblico deve iniziare con https://", request, error=True)
         db.set_setting("public_url", url)
         return redirect("/impostazioni", "Impostazioni salvate.", request)
     return render(request, "settings.html", guessed_url=guess_public_url(request),
@@ -662,14 +675,14 @@ async def telegram_settings(request: Request):
         return redirect("/impostazioni#telegram", "Notifiche Telegram disattivate.", request)
     if action == "rileva":
         if not db.get_setting("telegram_token"):
-            return redirect("/impostazioni#telegram", "Inserisci prima il token del bot.", request)
+            return redirect("/impostazioni#telegram", "Inserisci prima il token del bot.", request, error=True)
         try:
             chat_id, name = await asyncio.to_thread(notify.detect_chat_id, db.get_setting("telegram_token"))
         except RuntimeError as e:
-            return redirect("/impostazioni#telegram", f"Telegram: {e}", request)
+            return redirect("/impostazioni#telegram", f"Telegram: {e}", request, error=True)
         if not chat_id:
             return redirect("/impostazioni#telegram",
-                            "Nessun messaggio trovato: apri il bot su Telegram, scrivigli /start e riprova.", request)
+                            "Nessun messaggio trovato: apri il bot su Telegram, scrivigli /start e riprova.", request, error=True)
         db.set_setting("telegram_chat_id", chat_id)
         return redirect("/impostazioni#telegram", f"Chat trovata: {name or chat_id}. Ora prova con «Invia prova».", request)
     chat_id = form.get("telegram_chat_id", "").strip()
@@ -679,12 +692,12 @@ async def telegram_settings(request: Request):
         db.set_setting(key, "1" if form.get(key) == "1" else "0")
     if action == "prova":
         if not notify.configured():
-            return redirect("/impostazioni#telegram", "Servono sia il token del bot sia il chat ID.", request)
+            return redirect("/impostazioni#telegram", "Servono sia il token del bot sia il chat ID.", request, error=True)
         try:
             await asyncio.to_thread(notify.send_now, f"✅ Notifiche di <b>{db.get_setting('company_name', 'Assistenza')}</b> "
                                                      "attive: riceverai qui gli avvisi sui tuoi impianti.")
         except RuntimeError as e:
-            return redirect("/impostazioni#telegram", f"Invio non riuscito: {e}", request)
+            return redirect("/impostazioni#telegram", f"Invio non riuscito: {e}", request, error=True)
         return redirect("/impostazioni#telegram", "Messaggio di prova inviato: controlla Telegram.", request)
     return redirect("/impostazioni#telegram", "Impostazioni Telegram salvate.", request)
 
@@ -694,7 +707,7 @@ async def plant_ha_url(request: Request):
     pid = request.path_params["pid"]
     url = request.state.form.get("ha_url_manual", "").strip().rstrip("/")
     if url and not url.startswith(("http://", "https://")):
-        return redirect(f"/impianti/{pid}", "L'indirizzo deve iniziare con http:// o https://", request)
+        return redirect(f"/impianti/{pid}", "L'indirizzo deve iniziare con http:// o https://", request, error=True)
     db.run("UPDATE plants SET ha_url_manual = ? WHERE id = ?", url or None, pid)
     return redirect(f"/impianti/{pid}", "Indirizzo di Home Assistant salvato." if url else
                     "Indirizzo manuale rimosso: uso quello comunicato dall'agente.", request)

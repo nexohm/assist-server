@@ -92,7 +92,7 @@ form.inline { display: inline; }
 .link-btn { background: none; border: 0; color: var(--muted); cursor: pointer; font: inherit; padding: 0; }
 .link-btn:hover { color: var(--ink); text-decoration: underline; }
 
-.flash { background: var(--panel); border: 1px solid var(--line); border-left: 4px solid var(--brand); border-radius: 8px; padding: 10px 14px; margin-bottom: 18px; }
+.flash-old { background: var(--panel); border: 1px solid var(--line); border-left: 4px solid var(--brand); border-radius: 8px; padding: 10px 14px; margin-bottom: 18px; }
 .update { background: var(--warn-bg); color: var(--ink); border: 1px solid color-mix(in srgb, var(--warn) 35%, transparent); border-radius: 8px; padding: 10px 14px; margin-bottom: 18px; }
 .update code { background: var(--panel); padding: 1px 6px; border-radius: 5px; }
 .tag-update { display: inline-block; font-size: 0.75rem; font-weight: 600; color: var(--warn); background: var(--warn-bg); border-radius: 999px; padding: 0 8px; margin-top: 3px; }
@@ -137,3 +137,38 @@ details summary { cursor: pointer; color: var(--muted); }
 .auth { max-width: 440px; margin: 8vh auto; }
 .auth .brand { justify-content: center; margin-bottom: 18px; font-size: 1.1rem; }
 .empty { text-align: center; padding: 34px 10px; color: var(--muted); }
+
+/* ---- conferme: messaggio fisso in basso, spunta verde o X rossa animate ---- */
+.toast { position: fixed; left: 50%; bottom: 24px; z-index: 50; transform: translateX(-50%);
+  display: flex; align-items: center; gap: 12px; max-width: min(560px, calc(100vw - 32px));
+  background: var(--panel); color: var(--ink); border: 1px solid var(--line); border-radius: 14px;
+  padding: 12px 14px 12px 12px; box-shadow: 0 12px 32px rgba(0,0,0,.18);
+  animation: toast-in .35s cubic-bezier(.2,.9,.3,1.2) both, toast-out .45s ease-in 4.6s forwards; }
+.toast.err { border-color: color-mix(in srgb, var(--bad) 45%, var(--line));
+  animation: toast-in .35s cubic-bezier(.2,.9,.3,1.2) both, toast-shake .4s ease .75s, toast-out .45s ease-in 9s forwards; }
+.toast:hover { animation-play-state: paused; }
+.toast-text { font-weight: 600; line-height: 1.35; }
+.toast-icon { width: 34px; height: 34px; flex: 0 0 34px; }
+.toast-icon .ring { fill: none; stroke-width: 4; stroke-dasharray: 145; stroke-dashoffset: 145; animation: toast-draw .5s ease-out .1s forwards; }
+.toast-icon .mark { fill: none; stroke-width: 5; stroke-linecap: round; stroke-linejoin: round; stroke-dasharray: 48; stroke-dashoffset: 48; animation: toast-draw .35s ease-out .55s forwards; }
+.toast.ok .ring, .toast.ok .mark { stroke: var(--ok); }
+.toast.err .ring, .toast.err .mark { stroke: var(--bad); }
+.toast-x { background: none; border: 0; color: var(--muted); font-size: 1.4rem; line-height: 1; cursor: pointer; padding: 0 4px; margin-left: 4px; }
+.toast-x:hover { color: var(--ink); }
+.toast.hide { animation: toast-out .25s ease-in forwards; }
+@keyframes toast-in { from { opacity: 0; transform: translate(-50%, 24px) scale(.96); } to { opacity: 1; transform: translate(-50%, 0) scale(1); } }
+@keyframes toast-out { to { opacity: 0; transform: translate(-50%, 16px); visibility: hidden; } }
+@keyframes toast-draw { to { stroke-dashoffset: 0; } }
+@keyframes toast-shake { 0%,100% { transform: translateX(-50%); } 20%,60% { transform: translateX(calc(-50% - 7px)); } 40%,80% { transform: translateX(calc(-50% + 7px)); } }
+
+/* pulsante premuto: rotellina mentre la pagina salva */
+.btn.busy { position: relative; color: transparent !important; pointer-events: none; }
+.btn.busy::after { content: ""; position: absolute; inset: 0; margin: auto; width: 16px; height: 16px; border-radius: 50%;
+  border: 2.5px solid currentColor; border-color: #fff #fff transparent transparent; animation: spin .7s linear infinite; }
+.btn.ghost.busy::after, .btn.danger.busy::after { border-color: var(--ink) var(--ink) transparent transparent; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+@media (prefers-reduced-motion: reduce) {
+  .toast, .toast.err { animation: toast-out .3s ease-in 6s forwards; }
+  .toast-icon .ring, .toast-icon .mark { animation: none; stroke-dashoffset: 0; }
+}

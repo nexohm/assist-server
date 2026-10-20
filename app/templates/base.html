@@ -34,7 +34,16 @@
     · <a href="https://github.com/nexohm/assist-server/releases/tag/v{{ server_update }}" target="_blank" rel="noopener">novità</a>
   </div>
   {% endif %}
-  {% if flash %}<div class="flash">{{ flash }}</div>{% endif %}
+  {% if flash %}
+  <div class="toast {{ 'err' if flash.error else 'ok' }}" role="{{ 'alert' if flash.error else 'status' }}" aria-live="polite">
+    <svg class="toast-icon" viewBox="0 0 52 52" aria-hidden="true">
+      <circle class="ring" cx="26" cy="26" r="23"/>
+      {% if flash.error %}<path class="mark" d="M18 18 L34 34 M34 18 L18 34"/>{% else %}<path class="mark" d="M15 27 L23 35 L38 18"/>{% endif %}
+    </svg>
+    <span class="toast-text">{{ flash.text }}</span>
+    <button type="button" class="toast-x" aria-label="Chiudi">×</button>
+  </div>
+  {% endif %}
   {% block content %}{% endblock %}
 </main>
 {% if user %}<footer class="foot">{{ company }} · server di assistenza v{{ VERSION }}</footer>{% endif %}

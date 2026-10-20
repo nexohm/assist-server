@@ -8,10 +8,10 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 export SERVER_DIR="$(cd "${SERVER_DIR:-$HERE/..}" && pwd)"
 export AGENT_DIR="$(cd "${AGENT_DIR:-$SERVER_DIR/../ha-addons/installer_agent}" && pwd)"
 TMP="$(mktemp -d)"; mkdir -p "$TMP/srvdata" "$TMP/agentdata"
-cleanup() { kill $(jobs -p) 2>/dev/null || true; wait 2>/dev/null || true; rm -rf "$TMP"; }
+cleanup() { kill $(jobs -p) 2>/dev/null || true; wait 2>/dev/null || true; if [[ -n "${KEEP_TMP:-}" ]]; then echo "file del test in $TMP"; else rm -rf "$TMP"; fi; }
 trap cleanup EXIT
 
-python3 "$HERE/fake_ha.py" &
+FAKE_HA_LOG="$TMP/ha_calls.jsonl" python3 "$HERE/fake_ha.py" &
 python3 "$HERE/fake_telegram.py" 8124 "$TMP/telegram.jsonl" &
 (cd "$SERVER_DIR" && DATA_DIR="$TMP/srvdata" SECURE_COOKIES=0 SUITE_VERSION=test UPDATE_CHECK=0 TELEGRAM_API_BASE=http://127.0.0.1:8124 NOTIFY_WATCH_INTERVAL=1 \
    python3 -m uvicorn app.main:app --port 8080 --log-level warning) &

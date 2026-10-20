@@ -59,7 +59,15 @@ Errori: `404` codice inesistente o già usato, `410` codice scaduto.
 }
 ```
 
-Risposta: `{ "ok": true, "pending_commands": 0 }`
+Risposta:
+
+```json
+{ "ok": true, "pending_commands": 0, "tickets_updated": "2026-10-20T14:05:00+00:00",
+  "server_name": "Rossi Impianti", "brand_color": "#0f766e" }
+```
+
+`tickets_updated` (dal server 0.2.6) è l'ultima modifica ai ticket dell'impianto: quando cambia,
+l'agente rilegge i ticket e avvisa il cliente delle risposte dell'installatore.
 
 L'agente lo invia ogni `heartbeat_seconds` (default 60). `consent_until` è la scadenza dell'accesso
 remoto scelta dal cliente (campo facoltativo, aggiunto con l'agente 0.1.3): allo scadere l'agente
@@ -73,7 +81,7 @@ Il server considera l'impianto **offline** se non riceve nulla da più di 3 minu
 {
   "collected_at": "2026-10-18T13:00:00+00:00",
   "status": "ok | attenzione | critico",
-  "summary": { "entities": 412, "unavailable": 3, "low_battery": 1, "updates": 2, "automations_off": 0 },
+  "summary": { "entities": 412, "unavailable": 3, "low_battery": 1, "updates": 2, "automations_off": 0, "excluded": 4 },
   "system": { "ha_version": "…", "os_version": "…", "disk_used_gb": 12.1, "disk_total_gb": 58.0,
               "last_backup": "2026-10-17T03:00:00+00:00", "last_backup_age_days": 1 },
   "issues": [ { "severity": "critico|attenzione|info", "code": "unavailable_entities", "message": "…", "items": ["light.cucina", "…"] } ]

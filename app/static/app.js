@@ -37,3 +37,24 @@ document.addEventListener("click", function (e) {
   }
   setTimeout(poll, 4000);
 })();
+
+// Messaggio di conferma: si chiude con la ×.
+document.addEventListener("click", function (e) {
+  const x = e.target.closest && e.target.closest(".toast-x");
+  if (x) x.closest(".toast").classList.add("hide");
+});
+
+// Pulsante premuto: rotellina e niente doppio invio mentre la pagina salva.
+document.addEventListener("submit", function (e) {
+  if (e.defaultPrevented) return;            // conferma annullata
+  const form = e.target;
+  if (form.dataset.sending) { e.preventDefault(); return; }
+  form.dataset.sending = "1";
+  const btn = e.submitter || form.querySelector("button:not([type=button])");
+  if (btn && btn.classList.contains("btn")) btn.classList.add("busy");
+});
+// Tornando indietro col browser la pagina può essere ripresa dalla cache: niente rotelline rimaste.
+window.addEventListener("pageshow", function () {
+  document.querySelectorAll(".btn.busy").forEach(function (b) { b.classList.remove("busy"); });
+  document.querySelectorAll("form[data-sending]").forEach(function (f) { delete f.dataset.sending; });
+});

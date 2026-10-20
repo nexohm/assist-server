@@ -74,7 +74,7 @@ def diagnostics(value):
     return {
         "status": status if status in STATUSES else "attenzione",
         "collected_at": timestamp(value.get("collected_at")),
-        "summary": {k: number(summary.get(k)) for k in ("entities", "unavailable", "low_battery", "updates", "automations_off")},
+        "summary": {k: number(summary.get(k)) for k in ("entities", "unavailable", "low_battery", "updates", "automations_off", "excluded")},
         "system": {
             "ha_version": text(system.get("ha_version"), 40),
             "os_version": text(system.get("os_version"), 40),

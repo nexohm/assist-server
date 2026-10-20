@@ -47,6 +47,11 @@ check("Sessione scaduta" in r2.text, "POST senza CSRF valido rifiutato")
 
 # 1b. notifiche Telegram (finto Telegram su :8124)
 TG_LOG = os.path.join(S, "telegram.jsonl")
+def ha_calls():
+    try:
+        return [json.loads(l) for l in open(os.path.join(S, "ha_calls.jsonl"))]
+    except FileNotFoundError:
+        return []
 def tg_messages():
     try:
         return [json.loads(l)["text"] for l in open(TG_LOG)]
@@ -132,6 +137,59 @@ try:
     check("Passo domani mattina" in panel and "In lavorazione" in panel, "il cliente vede risposta e stato nel pannello")
     panel_post("rispondi", {"tid": t["id"], "text": "Perfetto grazie"})
     check("Perfetto grazie" in web.get(BASE + f"/ticket/{t['id']}").text, "risposta del cliente arriva in dashboard")
+    # #7 notifiche al cliente: la risposta dell'installatore arriva nella campanella di HA
+    check(wait_for(lambda: any(c["domain"] == "persistent_notification" and "Passo domani mattina" in c["data"].get("message", "")
+                               for c in ha_calls()), 40, 0.5), "notifica al cliente nella campanella di HA (risposta installatore)")
+    pn = [c for c in ha_calls() if c["domain"] == "persistent_notification"][0]["data"]
+    check(pn["title"].startswith("Rossi Impianti") and pn["notification_id"].startswith("assistenza_ticket_"),
+          "notifica con nome installatore e id per richiesta")
+    panel = requests.get(PANEL).text
+    check("App sul telefono: pixel 7" in panel and "telegram casa" in panel and "send message" not in panel,
+          "pannello: servizi notify di HA proposti al cliente")
+    pc = re.search(r'name="csrf" value="([^"]+)"', panel).group(1)
+    r = requests.post(PANEL + "notifiche", data={"csrf": pc, "ha": "1", "service": ["mobile_app_pixel_7", "notify_inventato"], "prova": "1"})
+    check('class="toast ok"' in r.text and "Notifica di prova inviata" in r.text, "notifiche: prova inviata con conferma animata")
+    calls = ha_calls()
+    check(any(c["domain"] == "notify" and c["service"] == "mobile_app_pixel_7" and c["data"]["data"]["url"] == "/hassio/ingress/abc123_installer_agent"
+              for c in calls) and not any(c["service"] == "notify_inventato" for c in calls),
+          "notifica sul telefono con link al pannello; servizi inventati ignorati")
+    n0 = len(ha_calls())
+    tp = web.get(BASE + f"/ticket/{t['id']}").text
+    web.post(BASE + f"/ticket/{t['id']}/rispondi", data={"csrf": csrf(tp), "text": "", "status": "chiuso", "assigned_to": "1"})
+    check(wait_for(lambda: any("chiusa" in c["data"].get("title", "") for c in ha_calls()[n0:] if c["domain"] == "notify"), 40, 0.5),
+          "notifica al cliente quando la richiesta viene chiusa")
+    msg = [c for c in ha_calls()[n0:] if c["domain"] == "persistent_notification"][-1]["data"]["message"]
+    check("Tapparella soggiorno ferma" in msg, "testo della notifica corretto")
+    # #5 richieste chiuse: nasconde quelle oltre i limiti scelti dal cliente
+    db.execute("UPDATE tickets SET updated_at='2026-01-01T00:00:00+00:00' WHERE id=?", (t["id"],)); db.commit()
+    panel = requests.get(PANEL).text
+    check("Tapparella soggiorno ferma" in panel, "richiesta chiusa visibile con le impostazioni predefinite")
+    pc = re.search(r'name="csrf" value="([^"]+)"', panel).group(1)
+    r = requests.post(PANEL + "richieste", data={"csrf": pc, "days": "30", "max_closed": ""})
+    check("Tapparella soggiorno ferma" not in r.text and "1 richiesta chiusa nascosta" in r.text and "storico" in r.text,
+          "richieste chiuse più vecchie di 30 giorni nascoste al cliente")
+    check(db.execute("SELECT COUNT(*) FROM tickets WHERE id=?", (t["id"],)).fetchone()[0] == 1, "l'installatore conserva lo storico")
+    requests.post(PANEL + "richieste", data={"csrf": pc, "days": "", "max_closed": ""})
+    # #1 entità escluse dal cliente
+    panel = requests.get(PANEL).text
+    check("Cosa controlla l" in panel and "light.giardino" in panel and "cover.soggiorno" in panel, "pannello: entità segnalate proposte")
+    r = requests.post(PANEL + "escludi", data={"csrf": pc, "entity": "light.giardino"})
+    check('class="toast ok"' in r.text and "non verrà più controllata" in r.text, "esclusione di un'entità con conferma")
+    r = requests.post(PANEL + "escludi", data={"csrf": pc, "entity": "COVER.*"})
+    r = requests.post(PANEL + "escludi", data={"csrf": pc, "entity": "javascript:alert(1)"})
+    check('class="toast err"' in r.text and "Nome non valido" in r.text, "nome entità non valido rifiutato (X rossa)")
+    def excluded_diag():
+        d = json.loads(db.execute("SELECT last_diag FROM plants WHERE id=?", (pid,)).fetchone()["last_diag"] or "{}")
+        return d if d.get("summary", {}).get("excluded") == 2 else None
+    d = wait_for(excluded_diag, 40, 0.5)
+    check(d and d["summary"]["unavailable"] == 0 and "light.giardino" not in json.dumps(d) and "cover.soggiorno" not in json.dumps(d),
+          "entità escluse: non controllate e non nominate al server")
+    page = web.get(BASE + f"/impianti/{pid}").text
+    check("Escluse dal cliente" in page, "dashboard: numero di entità escluse dal cliente")
+    for e in ("light.giardino", "cover.*"):
+        requests.post(PANEL + "includi", data={"csrf": pc, "entity": e})
+    check(wait_for(lambda: (json.loads(db.execute("SELECT last_diag FROM plants WHERE id=?", (pid,)).fetchone()["last_diag"])
+                            .get("summary", {}).get("unavailable") == 2), 40, 0.5), "entità di nuovo controllate")
     time.sleep(1)
     msgs = tg_messages()
     check(any("Nuovo ticket" in m and "Tapparella soggiorno ferma" in m and "Famiglia Bianchi" in m for m in msgs),
@@ -151,12 +209,16 @@ try:
     check(sum("Stato critico" in m for m in tg_messages()[n1:]) == 1, "Telegram: nessun avviso ripetuto")
     # link a Home Assistant comunicato dall'agente (finto HA: external_url)
     page = web.get(BASE + f"/impianti/{pid}").text
-    check("https://bianchi.duckdns.org" in page and "Apri Home Assistant" in page, "link a Home Assistant dall'agente")
+    check("https://bianchi123.ui.nabu.casa" in page and "Apri Home Assistant" in page,
+          "link a Home Assistant dall'agente (Nabu Casa, letto via websocket)")
     web.post(BASE + f"/impianti/{pid}/ha-url", data={"csrf": csrf(page), "ha_url_manual": "https://ha.bianchi.it/"})
     page = web.get(BASE + f"/impianti/{pid}").text
     check('href="https://ha.bianchi.it"' in page and "inserito a mano" in page, "indirizzo Home Assistant inserito a mano")
     r = web.post(BASE + f"/impianti/{pid}/ha-url", data={"csrf": csrf(page), "ha_url_manual": "ftp://x"})
     check("deve iniziare" in r.text, "indirizzo Home Assistant non valido rifiutato")
+    check('class="toast err"' in r.text and 'role="alert"' in r.text, "dashboard: errore mostrato con la X rossa")
+    r = web.post(BASE + f"/impianti/{pid}/ha-url", data={"csrf": csrf(r.text), "ha_url_manual": ""})
+    check('class="toast ok"' in r.text and "toast-x" in r.text, "dashboard: conferma con la spunta verde, chiudibile")
 
     # 7. consenso
     panel_post("consenso", {"enabled": "0"})

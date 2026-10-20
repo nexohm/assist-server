@@ -17,6 +17,7 @@
     <dt>Batterie basse</dt><dd>{{ num(sm.low_battery) }}</dd>
     <dt>Aggiornamenti disponibili</dt><dd>{{ num(sm.updates) }}</dd>
     <dt>Automazioni spente</dt><dd>{{ num(sm.automations_off) }}</dd>
+    {% if sm.excluded %}<dt>Escluse dal cliente</dt><dd>{{ num(sm.excluded) }} entità <span class="muted small">(non controllate su sua richiesta)</span></dd>{% endif %}
     {% if sy.disk_total_gb %}<dt>Disco</dt><dd>{{ num(sy.disk_used_gb) }} / {{ num(sy.disk_total_gb) }} GB</dd>{% endif %}
     <dt>Ultimo backup</dt><dd>{% if sy.last_backup %}{{ sy.last_backup | ts }} ({{ num(sy.last_backup_age_days) }} g fa){% else %}nessuno trovato{% endif %}</dd>
   </dl>

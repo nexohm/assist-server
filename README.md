@@ -42,6 +42,8 @@ ogni cliente ha un **add-on agente** sul proprio Home Assistant. Il cliente non 
 - **link all'Home Assistant del cliente**: comunicato dall'agente (indirizzo esterno o interno) o inserito a mano
 - **avvisi di aggiornamento**: banner per gli amministratori quando esce una nuova versione del server, ed etichetta
   "agente da aggiornare" sugli impianti con un agente vecchio (controllo su GitHub ogni 6 ore, `UPDATE_CHECK=0` per disattivarlo)
+- **conferme animate**: ogni salvataggio mostra un avviso con spunta (o una X rossa se qualcosa non va) e i
+  pulsanti mostrano un indicatore mentre lavorano
 
 **Agente (add-on)**
 - nessuna dipendenza esterna: solo Python standard
@@ -51,6 +53,10 @@ ogni cliente ha un **add-on agente** sul proprio Home Assistant. Il cliente non 
 - pannello **Assistenza** nella barra laterale di HA, con il nome e il colore dell'installatore:
   il cliente apre richieste, legge le risposte, sospende o attiva l'accesso remoto **a tempo**
   (1 ora, 4 ore, 24 ore, 7 giorni o senza scadenza: allo scadere si sospende da solo)
+- **notifiche al cliente** quando l'installatore risponde o cambia lo stato di una richiesta: in Home Assistant
+  e, a scelta, sul telefono (app companion o altri servizi `notify`), con apertura diretta del pannello
+- **pulizia delle richieste chiuse** nel pannello (dopo 7/30/90 giorni o tenendo le ultime N); lo storico resta sul server
+- **entità escluse**: il cliente decide cosa l'installatore non deve controllare (anche con `*`, es. `light.giardino_*`)
 
 ## Installazione del server (per l'installatore)
 

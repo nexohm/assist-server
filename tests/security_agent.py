@@ -147,6 +147,30 @@ html_page = urllib.request.urlopen(f"http://127.0.0.1:{pport}/", timeout=5)
 h = html_page.headers
 check("x-content-type-options" in {k.lower() for k in h.keys()}, "pannello: intestazioni di sicurezza presenti")
 
+# ---------------------------------------------------------------- 0.1.7: nuove funzioni del pannello
+# CSRF anche sui moduli nuovi: un altro sito non può nascondere entità all'installatore
+before = list(agent.state.get("excluded") or [])
+req = urllib.request.Request(f"http://127.0.0.1:{pport}/escludi", data=b"entity=sensor.allarme",
+                             method="POST", headers={"Content-Type": "application/x-www-form-urlencoded"})
+try:
+    urllib.request.urlopen(req, timeout=5)
+except Exception:  # noqa: BLE001
+    pass
+check(agent.state.get("excluded") == before, "pannello: un altro sito non può escludere entità dai controlli (CSRF)")
+
+# Testo deciso dal server che finisce nelle notifiche di Home Assistant (Markdown): niente link né immagini
+from agent.main import Agent as _Agent  # noqa: E402
+dirty = _Agent._plain("Aggiorna [qui](https://evil.example) ![t](https://evil.example/pixel.png) <img src=x onerror=alert(1)>")
+check("](" not in dirty.replace("\\]\\(", "") and "<img" not in dirty and "\\[qui\\]" in dirty,
+      "notifiche: link e immagini inviati dal server non diventano cliccabili in Home Assistant", dirty)
+
+# Nome di entità da escludere: solo dominio.nome (niente caratteri che finirebbero in HTML o nei filtri)
+import re as _re  # noqa: E402
+from agent.panel import ENTITY_PATTERN  # noqa: E402
+weird = ["javascript:alert(1)", "sensor.x\"><b>", "*", "a" * 70 + ".b", "../etc.passwd", "sensor.x y"]
+check(not any(ENTITY_PATTERN.fullmatch(w) for w in weird) and ENTITY_PATTERN.fullmatch("vacuum.robot_*"),
+      "pannello: i nomi di entità da escludere sono validati")
+
 bad = [r for r in results if not r[0]]
 print(f"\n{len(results) - len(bad)} difesi, {len(bad)} vulnerabili su {len(results)} controlli")
 sys.exit(1 if bad else 0)
