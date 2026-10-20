@@ -1,11 +1,13 @@
 # Prova il server e pubblica l'immagine Docker su ghcr.io.
 #   - push su main     -> tag "edge" (versione di prova)
+#   - push su sviluppo -> tag "sviluppo" (per provare una Pull Request prima del merge:
+#                         SUITE_TAG=sviluppo nel .env del server di prova)
 #   - tag v1.2.3       -> tag "1.2.3", "1.2" e "latest" (versione per gli installatori)
 name: Immagine server
 
 on:
   push:
-    branches: [main]
+    branches: [main, sviluppo]
     tags: ["v*.*.*"]
   pull_request:
   workflow_dispatch:
@@ -29,6 +31,8 @@ jobs:
         with:
           repository: ${{ github.repository_owner }}/ha-addons
           path: ha-addons
+          # sul branch sviluppo prova insieme l'agente dello stesso branch
+          ref: ${{ (github.head_ref || github.ref_name) == 'sviluppo' && 'sviluppo' || '' }}
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
@@ -49,6 +53,8 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      - id: sha
+        run: echo "short=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
       - id: meta
         uses: docker/metadata-action@v5
         with:
@@ -58,6 +64,7 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
             type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
             type=raw,value=edge,enable={{is_default_branch}}
+            type=raw,value=sviluppo,enable=${{ github.ref == 'refs/heads/sviluppo' }}
       - uses: docker/build-push-action@v6
         with:
           context: .
@@ -66,6 +73,6 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
-            VERSION=${{ steps.meta.outputs.version }}
+            VERSION=${{ steps.meta.outputs.version }}${{ github.ref == 'refs/heads/sviluppo' && format('-{0}', steps.sha.outputs.short) || '' }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
