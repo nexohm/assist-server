@@ -3,8 +3,6 @@
 <span class="badge s-{{ s }}">{{ labels.get(s, s) }}</span>
 {%- endmacro %}
 
-{% macro num(v) %}{{ '—' if v is none else (v | int if v == v | int else v) }}{% endmacro %}
-
 {% macro diagnostics(d) -%}
 {% if not d %}
   <p class="muted">Nessuna diagnostica disponibile.</p>
@@ -13,12 +11,12 @@
   <div class="row" style="margin-bottom:12px">{{ status_badge(d.status) }} <span class="muted small">raccolta il {{ d.collected_at | ts }}</span></div>
   <dl class="kv">
     <dt>Home Assistant</dt><dd>{{ sy.ha_version or '—' }}{% if sy.os_version %} · OS {{ sy.os_version }}{% endif %}</dd>
-    <dt>Entità</dt><dd>{{ num(sm.entities) }} totali · {{ num(sm.unavailable) }} non disponibili</dd>
-    <dt>Batterie basse</dt><dd>{{ num(sm.low_battery) }}</dd>
-    <dt>Aggiornamenti disponibili</dt><dd>{{ num(sm.updates) }}</dd>
-    <dt>Automazioni spente</dt><dd>{{ num(sm.automations_off) }}</dd>
-    {% if sy.disk_total_gb %}<dt>Disco</dt><dd>{{ num(sy.disk_used_gb) }} / {{ num(sy.disk_total_gb) }} GB</dd>{% endif %}
-    <dt>Ultimo backup</dt><dd>{% if sy.last_backup %}{{ sy.last_backup | ts }} ({{ num(sy.last_backup_age_days) }} g fa){% else %}nessuno trovato{% endif %}</dd>
+    <dt>Entità</dt><dd>{{ sm.entities }} totali · {{ sm.unavailable }} non disponibili</dd>
+    <dt>Batterie basse</dt><dd>{{ sm.low_battery }}</dd>
+    <dt>Aggiornamenti disponibili</dt><dd>{{ sm.updates }}</dd>
+    <dt>Automazioni spente</dt><dd>{{ sm.automations_off }}</dd>
+    {% if sy.disk_total_gb %}<dt>Disco</dt><dd>{{ sy.disk_used_gb }} / {{ sy.disk_total_gb }} GB</dd>{% endif %}
+    <dt>Ultimo backup</dt><dd>{% if sy.last_backup %}{{ sy.last_backup | ts }} ({{ sy.last_backup_age_days }} g fa){% else %}nessuno trovato{% endif %}</dd>
   </dl>
   {% if d.issues %}
   <h2 style="margin-top:18px">Problemi rilevati</h2>

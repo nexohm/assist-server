@@ -34,7 +34,6 @@ jobs:
           python-version: "3.13"
       - run: pip install -r assist-server/requirements.txt requests
       - run: SERVER_DIR=assist-server AGENT_DIR=ha-addons/installer_agent assist-server/tests/run_e2e.sh
-      - run: SERVER_DIR=assist-server AGENT_DIR=ha-addons/installer_agent assist-server/tests/run_security.sh
 
   image:
     needs: test

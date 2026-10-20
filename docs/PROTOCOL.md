@@ -53,6 +53,7 @@ Errori: `404` codice inesistente o già usato, `410` codice scaduto.
 {
   "consent": true,
   "consent_until": "2026-10-20T18:30:00+00:00",   // null = accesso senza scadenza
+  "ha_urls": { "internal": "http://192.168.1.50:8123", "external": "https://casa.duckdns.org" },  // dall'agente 0.1.4
   "ha_version": "2026.10.2",
   "diagnostics": { … }      // presente solo se il consenso è attivo e la diagnostica è stata eseguita
 }

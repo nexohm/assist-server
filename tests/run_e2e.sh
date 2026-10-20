@@ -12,7 +12,8 @@ cleanup() { kill $(jobs -p) 2>/dev/null || true; wait 2>/dev/null || true; rm -r
 trap cleanup EXIT
 
 python3 "$HERE/fake_ha.py" &
-(cd "$SERVER_DIR" && DATA_DIR="$TMP/srvdata" SECURE_COOKIES=0 SUITE_VERSION=test UPDATE_CHECK=0 \
+python3 "$HERE/fake_telegram.py" 8124 "$TMP/telegram.jsonl" &
+(cd "$SERVER_DIR" && DATA_DIR="$TMP/srvdata" SECURE_COOKIES=0 SUITE_VERSION=test UPDATE_CHECK=0 TELEGRAM_API_BASE=http://127.0.0.1:8124 NOTIFY_WATCH_INTERVAL=1 \
    python3 -m uvicorn app.main:app --port 8080 --log-level warning) &
 for _ in $(seq 1 30); do curl -fs http://127.0.0.1:8080/health >/dev/null 2>&1 && break; sleep 0.5; done
 python3 "$HERE/e2e.py" "$TMP"

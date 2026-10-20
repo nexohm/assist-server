@@ -7,8 +7,16 @@
     <tr><th>Utente</th><th>Ruolo</th><th>Stato</th><th></th></tr>
     {% for u in users %}<tr><td><b>{{ u.full_name or u.username }}</b><br><span class="muted small">{{ u.username }}</span></td>
       <td>{{ ROLE_LABELS[u.role] }}</td><td>{% if u.active %}<span class="badge s-ok">Attivo</span>{% else %}<span class="badge s-offline">Disattivato</span>{% endif %}</td>
-      <td>{% if u.id != user.id %}<form class="inline" method="post" action="/utenti/{{ u.id }}/attiva"><input type="hidden" name="csrf" value="{{ csrf }}">
-        <button class="btn ghost small">{{ 'Disattiva' if u.active else 'Riattiva' }}</button></form>{% endif %}</td></tr>{% endfor %}
+      <td>{% if u.id != user.id %}
+        <div class="row">
+        <form class="inline" method="post" action="/utenti/{{ u.id }}/attiva"><input type="hidden" name="csrf" value="{{ csrf }}">
+          <button class="btn ghost small">{{ 'Disattiva' if u.active else 'Riattiva' }}</button></form>
+        <details><summary class="small">Reimposta password</summary>
+          <form method="post" action="/utenti/{{ u.id }}/password" class="row" style="margin-top:6px"><input type="hidden" name="csrf" value="{{ csrf }}">
+            <input type="password" name="password" placeholder="Nuova password" minlength="10" required autocomplete="new-password" style="width:180px">
+            <button class="btn small">Salva</button></form></details>
+        </div>
+        {% else %}<a class="small" href="/account">Cambia la tua password</a>{% endif %}</td></tr>{% endfor %}
   </table></div>
   <div class="card">
     <h2>Nuovo utente</h2>

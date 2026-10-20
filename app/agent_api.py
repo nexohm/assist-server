@@ -7,7 +7,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
-from . import db, sanitize
+from . import db, notify
 from .security import hash_token, new_token, normalize_pair_code
 
 PROTOCOL_VERSION = 1
@@ -29,38 +29,11 @@ def error(status, message):
     return JSONResponse({"error": message}, status_code=status)
 
 
-MAX_TICKETS_PER_DAY = 20  # protezione da un agente che apre ticket a raffica
-
-
-class BadRequest(Exception):
-    def __init__(self, message, status=400):
-        super().__init__(message)
-        self.status = status
-
-
-async def read_json(request: Request) -> dict:
-    """Corpo JSON della richiesta: deve essere un oggetto e stare sotto MAX_BODY.
-    Il corpo si legge a pezzi e ci si ferma appena supera il limite: una richiesta enorme
-    non arriva mai per intero in memoria."""
-    try:
-        declared = int(request.headers.get("content-length") or 0)
-    except ValueError:
-        raise BadRequest("Content-Length non valido") from None
-    if declared > MAX_BODY:
-        raise BadRequest("richiesta troppo grande", 413)
-    chunks, size = [], 0
-    async for chunk in request.stream():
-        size += len(chunk)
-        if size > MAX_BODY:
-            raise BadRequest("richiesta troppo grande", 413)
-        chunks.append(chunk)
-    try:
-        data = json.loads(b"".join(chunks) or b"{}")
-    except ValueError:
-        raise BadRequest("JSON non valido") from None
-    if not isinstance(data, dict):
-        raise BadRequest("il corpo deve essere un oggetto JSON")
-    return data
+async def read_json(request: Request):
+    body = await request.body()
+    if len(body) > MAX_BODY:
+        raise ValueError("richiesta troppo grande")
+    return json.loads(body or b"{}")
 
 
 def authenticate(request: Request):
@@ -78,32 +51,25 @@ def authenticate(request: Request):
     if not plant:
         return None, error(401, "token non valido o impianto revocato")
     db.run("UPDATE plants SET last_seen = ?, agent_version = COALESCE(?, agent_version) WHERE id = ?",
-           db.now(), sanitize.text(request.headers.get("x-agent-version"), 40), plant["id"])
+           db.now(), request.headers.get("x-agent-version"), plant["id"])
     return plant, None
 
 
 async def pair(request: Request):
     try:
         data = await read_json(request)
-    except BadRequest as e:
-        return error(e.status, str(e))
-    code = normalize_pair_code(sanitize.text(data.get("code"), 20) or "")
+    except ValueError:
+        return error(400, "JSON non valido")
+    code = normalize_pair_code(data.get("code", ""))
     plant = db.one("SELECT * FROM plants WHERE pair_code = ? AND revoked = 0", code) if code else None
     if not plant:
         return error(404, "codice di abbinamento inesistente o già usato")
-    expires = db.parse_ts(plant["pair_expires"])
-    if not expires or expires < datetime.now(timezone.utc):
+    if db.parse_ts(plant["pair_expires"]) < datetime.now(timezone.utc):
         return error(410, "codice di abbinamento scaduto: generarne uno nuovo dalla dashboard")
     token = new_token()
-    # Aggiornamento condizionato al codice: se due agenti usano lo stesso codice nello stesso
-    # istante, solo il primo lo "consuma" e riceve un token valido.
-    taken = db.changed(
-        "UPDATE plants SET token_hash = ?, pair_code = NULL, pair_expires = NULL, paired_at = ?, "
-        "last_seen = ?, ha_version = ?, agent_version = ? WHERE id = ? AND pair_code = ? AND revoked = 0",
-        hash_token(token), db.now(), db.now(), sanitize.text(data.get("ha_version"), 40),
-        sanitize.text(data.get("agent_version"), 40), plant["id"], code)
-    if not taken:
-        return error(404, "codice di abbinamento inesistente o già usato")
+    db.run("UPDATE plants SET token_hash = ?, pair_code = NULL, pair_expires = NULL, paired_at = ?, "
+           "last_seen = ?, ha_version = ?, agent_version = ? WHERE id = ?",
+           hash_token(token), db.now(), db.now(), data.get("ha_version"), data.get("agent_version"), plant["id"])
     return JSONResponse({
         "plant_id": plant["id"],
         "token": token,
@@ -119,16 +85,23 @@ async def report(request: Request):
         return err
     try:
         data = await read_json(request)
-    except BadRequest as e:
-        return error(e.status, str(e))
-    consent = 0 if data.get("consent", True) is False else 1
-    until = sanitize.timestamp(data.get("consent_until")) if consent else None
+    except ValueError as e:
+        return error(400, str(e))
+    consent = 1 if data.get("consent", True) else 0
+    until = data.get("consent_until") if consent else None
+    if until is not None and db.parse_ts(until) is None:
+        until = None  # valore non valido: lo ignoriamo
     db.run("UPDATE plants SET consent = ?, consent_until = ?, ha_version = COALESCE(?, ha_version) WHERE id = ?",
-           consent, until, sanitize.text(data.get("ha_version"), 40), plant["id"])
-    diag = sanitize.diagnostics(data.get("diagnostics"))
-    if consent and diag:
+           consent, until, data.get("ha_version"), plant["id"])
+    urls = data.get("ha_urls")
+    if isinstance(urls, dict):
+        clean = {k: (v.strip()[:300] if isinstance(v, str) and v.strip().startswith(("http://", "https://")) else None)
+                 for k, v in urls.items() if k in ("internal", "external")}
+        db.run("UPDATE plants SET ha_internal_url = ?, ha_external_url = ? WHERE id = ?",
+               clean.get("internal"), clean.get("external"), plant["id"])
+    if consent and isinstance(data.get("diagnostics"), dict):
         db.run("UPDATE plants SET last_diag = ?, last_diag_at = ? WHERE id = ?",
-               json.dumps(diag), db.now(), plant["id"])
+               json.dumps(data["diagnostics"]), db.now(), plant["id"])
     pending = db.one("SELECT COUNT(*) AS n FROM commands WHERE plant_id = ? AND status = 'in_attesa'", plant["id"])
     # Nome e colore dell'installatore viaggiano a ogni rapporto: se cambiano, il pannello del cliente si aggiorna.
     return JSONResponse({"ok": True, "pending_commands": pending["n"],
@@ -186,24 +159,13 @@ async def command_result(request: Request):
         return error(404, "comando inesistente")
     try:
         data = await read_json(request)
-    except BadRequest as e:
-        return error(e.status, str(e))
-    ok = data.get("ok") is True
-    if ok and cmd["name"] == "run_diagnostics":
-        payload = sanitize.diagnostics(data.get("result"))
-        ok = payload is not None
-        if not ok:
-            payload = {"error": "diagnostica non valida"}
-    elif ok:
-        payload = data.get("result") if isinstance(data.get("result"), dict) else {}
-    else:
-        payload = {"error": sanitize.text(data.get("error"), 500) or "errore sconosciuto"}
-    # Solo un comando ancora in corso accetta un risultato: uno già concluso non si riscrive.
-    if not db.changed("UPDATE commands SET status = ?, result = ?, done_at = ? WHERE id = ? "
-                      "AND status IN ('in_attesa', 'inviato')",
-                      "completato" if ok else "errore", json.dumps(payload), db.now(), cmd["id"]):
-        return error(409, "comando già concluso")
-    if ok and cmd["name"] == "run_diagnostics":
+    except ValueError as e:
+        return error(400, str(e))
+    ok = bool(data.get("ok"))
+    payload = data.get("result") if ok else {"error": data.get("error", "errore sconosciuto")}
+    db.run("UPDATE commands SET status = ?, result = ?, done_at = ? WHERE id = ?",
+           "completato" if ok else "errore", json.dumps(payload), db.now(), cmd["id"])
+    if ok and cmd["name"] == "run_diagnostics" and isinstance(payload, dict):
         db.run("UPDATE plants SET last_diag = ?, last_diag_at = ? WHERE id = ?",
                json.dumps(payload), db.now(), plant["id"])
     return JSONResponse({"ok": True})
@@ -216,24 +178,21 @@ async def tickets(request: Request):
     if request.method == "POST":
         try:
             data = await read_json(request)
-        except BadRequest as e:
-            return error(e.status, str(e))
-        title = sanitize.text(data.get("title"), 200)
-        description = sanitize.text(data.get("description"), 5000)
+        except ValueError as e:
+            return error(400, str(e))
+        title = (data.get("title") or "").strip()[:200]
+        description = (data.get("description") or "").strip()[:5000]
         if not title:
             return error(400, "il titolo è obbligatorio")
-        since = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat(timespec="seconds")
-        recent = db.one("SELECT COUNT(*) AS n FROM tickets WHERE plant_id = ? AND created_at > ?", plant["id"], since)
-        if recent["n"] >= MAX_TICKETS_PER_DAY:
-            return error(429, "troppe richieste aperte nelle ultime 24 ore: riprova più tardi")
-        diagnostics = sanitize.diagnostics(data.get("diagnostics")) if plant["consent"] else None
+        diagnostics = data.get("diagnostics") if plant["consent"] else None
         ts = db.now()
         tid = db.run("INSERT INTO tickets(plant_id, title, contact, diagnostics, created_at, updated_at) "
-                     "VALUES(?, ?, ?, ?, ?, ?)", plant["id"], title, sanitize.text(data.get("contact"), 200),
-                     json.dumps(diagnostics) if diagnostics else None, ts, ts)
+                     "VALUES(?, ?, ?, ?, ?, ?)", plant["id"], title, (data.get("contact") or "")[:200],
+                     json.dumps(diagnostics) if isinstance(diagnostics, dict) else None, ts, ts)
         if description:
             db.run("INSERT INTO ticket_messages(ticket_id, author_type, author_name, text, created_at) "
                    "VALUES(?, 'cliente', 'Cliente', ?, ?)", tid, description, ts)
+        notify.new_ticket(tid, plant["id"], title, description)
         return JSONResponse({"ticket_id": tid})
 
     rows = db.all_("SELECT id, title, status, created_at, updated_at FROM tickets WHERE plant_id = ? "
@@ -253,9 +212,9 @@ async def ticket_message(request: Request):
         return error(404, "ticket inesistente")
     try:
         data = await read_json(request)
-    except BadRequest as e:
-        return error(e.status, str(e))
-    text = sanitize.text(data.get("text"), 5000)
+    except ValueError as e:
+        return error(400, str(e))
+    text = (data.get("text") or "").strip()[:5000]
     if not text:
         return error(400, "messaggio vuoto")
     ts = db.now()
@@ -264,6 +223,7 @@ async def ticket_message(request: Request):
     # Se il cliente riscrive su un ticket chiuso, lo riapriamo.
     status = "aperto" if ticket["status"] == "chiuso" else ticket["status"]
     db.run("UPDATE tickets SET updated_at = ?, status = ? WHERE id = ?", ts, status, ticket["id"])
+    notify.client_reply(ticket["id"], plant["id"], ticket["title"], text)
     return JSONResponse({"ok": True})
 
 

@@ -38,6 +38,8 @@ code, .mono { font-family: ui-monospace, "JetBrains Mono", Menlo, monospace; }
 .nav { display: flex; gap: 4px; flex: 1; overflow-x: auto; }
 .nav a { color: var(--muted); padding: 6px 10px; border-radius: 7px; white-space: nowrap; }
 .nav a.on, .nav a:hover { color: var(--ink); background: var(--bg); text-decoration: none; }
+.who-link { color: var(--muted); }
+.who-link:hover { color: var(--ink); }
 .who { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 0.9rem; white-space: nowrap; }
 
 main { max-width: 1180px; margin: 0 auto; padding: 26px 16px 60px; }
@@ -120,13 +122,16 @@ details summary { cursor: pointer; color: var(--muted); }
 @media (max-width: 720px) {
   .top-in { flex-wrap: wrap; height: auto; padding-top: 10px; gap: 6px 14px; }
   .who { margin-left: auto; }
-  .who > span { display: none; }
+  .who > .who-link { display: none; }
   .nav { order: 3; flex-basis: 100%; padding-bottom: 6px; }
   main { padding-top: 18px; }
   .card { padding: 14px; }
 }
 
 .foot { max-width: 1180px; margin: -40px auto 0; padding: 0 16px 28px; color: var(--muted); font-size: 0.8rem; }
+
+.check { display: flex; align-items: center; gap: 8px; font-weight: 400; margin: 6px 0; }
+.check input { width: auto; }
 
 /* pagine di accesso */
 .auth { max-width: 440px; margin: 8vh auto; }

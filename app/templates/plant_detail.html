@@ -66,16 +66,36 @@
       <dl class="kv"><dt>Home Assistant</dt><dd>{{ plant.ha_version or '—' }}</dd><dt>Agente</dt><dd>{{ plant.agent_version or '—' }}
           {% if plant.agent_version and agent_outdated(plant.agent_version) %}<br><span class="tag-update">disponibile la {{ latest_agent() }}</span>{% endif %}</dd>
         <dt>Abbinato il</dt><dd>{{ plant.paired_at | ts }}</dd><dt>Creato il</dt><dd>{{ plant.created_at | ts }}</dd></dl>
+      {% set ha_url = plant.ha_url_manual or plant.ha_external_url or plant.ha_internal_url %}
+      <h2 style="margin-top:18px">Home Assistant del cliente</h2>
+      {% if ha_url %}
+      <p style="margin:0 0 8px"><a class="btn" href="{{ ha_url }}" target="_blank" rel="noopener">Apri Home Assistant ↗</a></p>
+      <p class="muted small" style="margin:0">{{ ha_url }}
+        {% if plant.ha_url_manual %}(inserito a mano){% elif plant.ha_external_url %}(indirizzo esterno, comunicato dall'agente)
+        {% else %}(indirizzo interno: funziona solo dalla rete del cliente o in VPN){% endif %}</p>
+      {% else %}
+      <p class="muted small" style="margin:0">Nessun indirizzo: l'agente lo comunica se in Home Assistant è impostato
+        (Impostazioni → Sistema → Rete), oppure inseriscilo qui.</p>
+      {% endif %}
+      {% if can(user, 'edit') %}
+      <details style="margin-top:8px"><summary class="small">{{ 'Cambia indirizzo' if ha_url else 'Inserisci indirizzo' }}</summary>
+        <form method="post" action="/impianti/{{ plant.id }}/ha-url" class="row" style="margin-top:6px">
+          <input type="hidden" name="csrf" value="{{ csrf }}">
+          <input class="grow" name="ha_url_manual" value="{{ plant.ha_url_manual or '' }}" placeholder="https://casa-cliente.duckdns.org">
+          <button class="btn small">Salva</button></form>
+        <p class="muted small" style="margin:4px 0 0">Lascia vuoto e salva per tornare a quello comunicato dall'agente.</p>
+      </details>
+      {% endif %}
       {% if plant.agent_version and agent_outdated(plant.agent_version) %}
       <p class="muted small" style="margin:12px 0 0">Per aggiornare l'agente, sull'Home Assistant del cliente:
         Impostazioni → Componenti aggiuntivi → Agente Assistenza → <b>Aggiorna</b>.</p>
       {% endif %}
       {% if can(user, 'edit') %}
       <div class="row" style="margin-top:16px">
-        <form class="inline" method="post" action="/impianti/{{ plant.id }}/codice" data-confirm="Il collegamento attuale smetterà di funzionare. Continuare?">
+        <form class="inline" method="post" action="/impianti/{{ plant.id }}/codice" onsubmit="return confirm('Il collegamento attuale smetterà di funzionare. Continuare?')">
           <input type="hidden" name="csrf" value="{{ csrf }}"><button class="btn ghost small">Nuovo codice</button></form>
         {% if not plant.revoked %}
-        <form class="inline" method="post" action="/impianti/{{ plant.id }}/revoca" data-confirm="Revocare l'accesso di questo impianto?">
+        <form class="inline" method="post" action="/impianti/{{ plant.id }}/revoca" onsubmit="return confirm('Revocare l\'accesso di questo impianto?')">
           <input type="hidden" name="csrf" value="{{ csrf }}"><button class="btn danger small">Revoca accesso</button></form>
         {% endif %}
       </div>
@@ -85,6 +105,25 @@
 </div>
 {% endblock %}
 {% block scripts %}
-<div id="plant-live" hidden data-url="/impianti/{{ plant.id }}/stato.json"
-     data-state="{{ {'status': plant.status, 'diag': plant.last_diag_at, 'cmds': commands | map(attribute='status') | list} | tojson | forceescape }}"></div>
+<script>
+// La pagina si aggiorna da sola quando lo stato dell'impianto o dei comandi cambia.
+(function () {
+  const first = {{ {'status': plant.status, 'diag': plant.last_diag_at, 'cmds': commands | map(attribute='status') | list} | tojson }};
+  async function poll() {
+    try {
+      const r = await fetch('/impianti/{{ plant.id }}/stato.json', {credentials: 'same-origin'});
+      if (r.ok) {
+        const s = await r.json();
+        document.getElementById('seen').textContent = s.last_seen;
+        const cmds = s.commands.map(c => c.status);
+        if (s.status !== first.status || s.last_diag_at !== first.diag || JSON.stringify(cmds) !== JSON.stringify(first.cmds)) {
+          location.reload(); return;
+        }
+      }
+    } catch (e) {}
+    setTimeout(poll, 4000);
+  }
+  setTimeout(poll, 4000);
+})();
+</script>
 {% endblock %}

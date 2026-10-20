@@ -2,7 +2,8 @@
 {% block title %}Impostazioni{% endblock %}
 {% block content %}
 <div class="head"><h1>Impostazioni</h1></div>
-<div class="card" style="max-width:560px">
+<div class="stack" style="max-width:640px">
+<div class="card">
   <form method="post"><input type="hidden" name="csrf" value="{{ csrf }}">
     <label for="company_name">Nome dell'azienda</label><input id="company_name" name="company_name" value="{{ company }}" required>
     <p class="muted small">Compare in questa dashboard e nel pannello Assistenza dei clienti (si aggiorna entro un minuto).</p>
@@ -13,5 +14,36 @@
       Lascialo vuoto per rilevarlo in automatico (ora: <code>{{ guessed_url }}</code>).</p>
     <p style="margin-top:18px"><button class="btn">Salva</button></p>
   </form>
+</div>
+
+<div class="card" id="telegram">
+  <h2>Notifiche Telegram</h2>
+  <p class="muted small" style="margin-top:0">Ricevi su Telegram i nuovi ticket, le risposte dei clienti e gli impianti offline o critici.</p>
+  <ol class="small" style="padding-left:18px;margin:0 0 6px">
+    <li>Su Telegram apri <b>@BotFather</b>, invia <code>/newbot</code> e scegli un nome: ti dà il <b>token</b>.</li>
+    <li>Incollalo qui sotto e salva.</li>
+    <li>Apri il tuo bot, premi <b>Avvia</b> (o scrivi <code>/start</code>), poi qui clicca <b>Rileva chat ID</b>.</li>
+    <li>Clicca <b>Invia prova</b>.</li>
+  </ol>
+  <form method="post" action="/impostazioni/telegram"><input type="hidden" name="csrf" value="{{ csrf }}">
+    <!-- pulsante predefinito (Invio): salva -->
+    <button name="azione" value="salva" tabindex="-1" aria-hidden="true" style="position:absolute;left:-9999px"></button>
+    <label for="telegram_token">Token del bot</label>
+    <input id="telegram_token" name="telegram_token" type="password" autocomplete="off"
+           placeholder="{{ 'impostato — lascia vuoto per non cambiarlo' if tg_token_set else '123456789:ABC...' }}">
+    <label for="telegram_chat_id">Chat ID</label>
+    <div class="row"><input class="grow" id="telegram_chat_id" name="telegram_chat_id" value="{{ tg_chat_id }}" placeholder="es. 123456789">
+      <button class="btn ghost" name="azione" value="rileva">Rileva chat ID</button></div>
+    <label>Avvisami per</label>
+    {% for key, (label, on) in tg_events.items() %}
+    <label class="check"><input type="checkbox" name="{{ key }}" value="1" {{ 'checked' if on }}> {{ label }}</label>
+    {% endfor %}
+    <div class="row" style="margin-top:16px">
+      <button class="btn" name="azione" value="salva">Salva</button>
+      <button class="btn ghost" name="azione" value="prova">Invia prova</button>
+      {% if tg_token_set %}<button class="btn danger" name="azione" value="rimuovi" onclick="return confirm('Disattivare le notifiche Telegram?')">Disattiva</button>{% endif %}
+    </div>
+  </form>
+</div>
 </div>
 {% endblock %}

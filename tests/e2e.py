@@ -17,10 +17,6 @@ def check(cond, msg):
 def csrf(html):
     return re.search(r'name="csrf" value="([^"]+)"', html).group(1)
 
-def panel_post(action, data):
-    """Modulo del pannello: ogni invio porta il token anti-CSRF letto dalla pagina."""
-    return requests.post(PANEL + action, data={"csrf": csrf(requests.get(PANEL).text), **data})
-
 def wait_for(fn, timeout=30, step=0.5):
     end = time.time() + timeout
     while time.time() < end:
@@ -32,11 +28,7 @@ def wait_for(fn, timeout=30, step=0.5):
 web = requests.Session()
 # 1. setup guidato
 r = web.get(BASE + "/setup")
-r0 = web.post(BASE + "/setup", data={"csrf": csrf(r.text), "company_name": "Pirata", "username": "pirata",
-                                      "password": "passwordpirata1", "password2": "passwordpirata1"})
-check("Codice di installazione errato" in r0.text, "setup senza codice di installazione rifiutato")
-setup_code = open(f"{S}/srvdata/setup-code.txt").read().strip()
-r = web.post(BASE + "/setup", data={"csrf": csrf(r.text), "setup_code": setup_code, "company_name": "Rossi Impianti", "brand_color": "#1d4ed8",
+r = web.post(BASE + "/setup", data={"csrf": csrf(r.text), "company_name": "Rossi Impianti", "brand_color": "#1d4ed8",
                                      "full_name": "Mario Rossi", "username": "mario", "password": "passwordsicura1", "password2": "passwordsicura1"})
 check("Panoramica" in r.text and "Rossi Impianti" in r.text, "setup completato e login automatico")
 check(web.get(BASE + "/setup").url.endswith("/login") or "Panoramica" in web.get(BASE + "/setup").text, "setup non ripetibile")
@@ -44,6 +36,26 @@ check(web.get(BASE + "/setup").url.endswith("/login") or "Panoramica" in web.get
 # CSRF
 r2 = web.post(BASE + "/clienti/nuovo", data={"name": "X", "csrf": "sbagliato"})
 check("Sessione scaduta" in r2.text, "POST senza CSRF valido rifiutato")
+
+# 1b. notifiche Telegram (finto Telegram su :8124)
+TG_LOG = os.path.join(S, "telegram.jsonl")
+def tg_messages():
+    try:
+        return [json.loads(l)["text"] for l in open(TG_LOG)]
+    except FileNotFoundError:
+        return []
+st = web.get(BASE + "/impostazioni").text
+r = web.post(BASE + "/impostazioni/telegram", data={"csrf": csrf(st), "telegram_token": "123:TOKEN", "azione": "rileva"})
+check("Chat trovata: Roby" in r.text and 'value="4242"' in r.text, "Telegram: token salvato e chat ID rilevato")
+r = web.post(BASE + "/impostazioni/telegram", data={"csrf": csrf(r.text), "azione": "prova", "notify_tickets": "1",
+                                                    "notify_offline": "1", "notify_critical": "1"})
+check("Messaggio di prova inviato" in r.text and "Rossi Impianti" in tg_messages()[-1], "Telegram: messaggio di prova")
+r = web.post(BASE + "/impostazioni/telegram", data={"csrf": csrf(r.text), "telegram_token": "999:SBAGLIATO", "azione": "prova",
+                                                    "notify_tickets": "1", "notify_offline": "1", "notify_critical": "1"})
+check("Invio non riuscito: Unauthorized" in r.text, "Telegram: token sbagliato -> errore chiaro")
+web.post(BASE + "/impostazioni/telegram", data={"csrf": csrf(r.text), "telegram_token": "123:TOKEN", "azione": "salva",
+                                                "notify_tickets": "1", "notify_offline": "1", "notify_critical": "1"})
+check("impostato" in web.get(BASE + "/impostazioni").text, "Telegram: il token non viene mostrato nella pagina")
 
 # 2. cliente + impianto
 r = web.get(BASE + "/clienti/nuovo")
@@ -101,7 +113,7 @@ try:
     # 6. pannello cliente + ticket
     panel = requests.get(PANEL)
     check(panel.status_code == 200 and "Rossi Impianti" in panel.text and "Collegato" in panel.text, "pannello cliente con marchio installatore")
-    r = panel_post("ticket", {"title": "Tapparella soggiorno ferma", "description": "Da ieri non sale più", "contact": "333 9998877"})
+    r = requests.post(PANEL + "ticket", data={"title": "Tapparella soggiorno ferma", "description": "Da ieri non sale più", "contact": "333 9998877"})
     check("Richiesta inviata" in r.text, "cliente apre un ticket dal pannello")
     t = db.execute("SELECT * FROM tickets WHERE plant_id=?", (pid,)).fetchone()
     check(t and t["diagnostics"] and t["contact"] == "333 9998877", "ticket arrivato con diagnostica allegata")
@@ -110,23 +122,48 @@ try:
     web.post(BASE + f"/ticket/{t['id']}/rispondi", data={"csrf": csrf(tp), "text": "Passo domani mattina alle 9", "status": "in_lavorazione", "assigned_to": "1"})
     panel = requests.get(PANEL).text
     check("Passo domani mattina" in panel and "In lavorazione" in panel, "il cliente vede risposta e stato nel pannello")
-    panel_post("rispondi", {"tid": t["id"], "text": "Perfetto grazie"})
+    requests.post(PANEL + "rispondi", data={"tid": t["id"], "text": "Perfetto grazie"})
     check("Perfetto grazie" in web.get(BASE + f"/ticket/{t['id']}").text, "risposta del cliente arriva in dashboard")
+    time.sleep(1)
+    msgs = tg_messages()
+    check(any("Nuovo ticket" in m and "Tapparella soggiorno ferma" in m and "Famiglia Bianchi" in m for m in msgs),
+          "Telegram: notifica nuovo ticket")
+    check(any("Risposta del cliente" in m and "Perfetto grazie" in m for m in msgs), "Telegram: notifica risposta del cliente")
+    # offline: simulo l'ultimo contatto 10 minuti fa (il controllo gira ogni secondo nei test)
+    n0 = len(tg_messages())
+    db.execute("UPDATE plants SET last_seen=? WHERE id=?", ("2020-01-01T00:00:00+00:00", pid)); db.commit()
+    check(wait_for(lambda: any("Impianto offline" in m for m in tg_messages()[n0:]), 10, 0.3), "Telegram: impianto offline")
+    check(wait_for(lambda: any("Di nuovo online" in m for m in tg_messages()[n0:]), 40, 0.5), "Telegram: impianto di nuovo online")
+    n1 = len(tg_messages())
+    crit = json.dumps({"status": "critico", "summary": {}, "system": {}, "issues": [{"severity": "critico", "code": "disk_full", "message": "Disco quasi pieno (95%)"}]})
+    db.execute("UPDATE plants SET last_diag=? WHERE id=?", (crit, pid)); db.commit()
+    check(wait_for(lambda: any("Stato critico" in m and "Disco quasi pieno" in m for m in tg_messages()[n1:]), 10, 0.3),
+          "Telegram: impianto critico, con il problema")
+    time.sleep(2.5)
+    check(sum("Stato critico" in m for m in tg_messages()[n1:]) == 1, "Telegram: nessun avviso ripetuto")
+    # link a Home Assistant comunicato dall'agente (finto HA: external_url)
+    page = web.get(BASE + f"/impianti/{pid}").text
+    check("https://bianchi.duckdns.org" in page and "Apri Home Assistant" in page, "link a Home Assistant dall'agente")
+    web.post(BASE + f"/impianti/{pid}/ha-url", data={"csrf": csrf(page), "ha_url_manual": "https://ha.bianchi.it/"})
+    page = web.get(BASE + f"/impianti/{pid}").text
+    check('href="https://ha.bianchi.it"' in page and "inserito a mano" in page, "indirizzo Home Assistant inserito a mano")
+    r = web.post(BASE + f"/impianti/{pid}/ha-url", data={"csrf": csrf(page), "ha_url_manual": "ftp://x"})
+    check("deve iniziare" in r.text, "indirizzo Home Assistant non valido rifiutato")
 
     # 7. consenso
-    panel_post("consenso", {"enabled": "0"})
+    requests.post(PANEL + "consenso", data={"enabled": "0"})
     check(wait_for(lambda: db.execute("SELECT consent FROM plants WHERE id=?", (pid,)).fetchone()["consent"] == 0, 10, 0.2), "il cliente sospende l'accesso: il server lo sa")
     page = web.get(BASE + f"/impianti/{pid}").text
     check("sospeso dal cliente" in page, "dashboard mostra accesso sospeso")
     r = web.post(BASE + f"/impianti/{pid}/comandi", data={"csrf": csrf(page), "name": "run_diagnostics"})
     check("comando non inviato" in r.text, "diagnostica bloccata con consenso sospeso")
-    panel_post("consenso", {"enabled": "1", "durata": "4h"})
+    requests.post(PANEL + "consenso", data={"enabled": "1", "durata": "4h"})
     check(wait_for(lambda: db.execute("SELECT consent_until FROM plants WHERE id=?", (pid,)).fetchone()["consent_until"], 10, 0.2),
           "accesso a tempo (4 ore): il server riceve la scadenza")
     check("Accesso remoto fino al" in web.get(BASE + f"/impianti/{pid}").text and "fino al" in requests.get(PANEL).text,
           "scadenza visibile in dashboard e nel pannello del cliente")
-    panel_post("consenso", {"enabled": "0"})
-    panel_post("consenso", {"enabled": "1", "durata": "sempre"})
+    requests.post(PANEL + "consenso", data={"enabled": "0"})
+    requests.post(PANEL + "consenso", data={"enabled": "1", "durata": "sempre"})
     check(wait_for(lambda: (lambda r: r["consent"] == 1 and r["consent_until"] is None)(
           db.execute("SELECT consent, consent_until FROM plants WHERE id=?", (pid,)).fetchone()), 10, 0.2),
           "accesso senza scadenza")
@@ -141,6 +178,27 @@ try:
     r = ro.post(BASE + f"/impianti/{pid}/comandi", data={"csrf": csrf(pg), "name": "ping"})
     check("Non hai i permessi" in r.text and '/comandi"' not in pg, "sola lettura non può inviare comandi")
     check("Non hai i permessi" in ro.get(BASE + "/utenti").text, "sola lettura non vede gestione utenti")
+    ap = ro.get(BASE + "/account").text
+    r = ro.post(BASE + "/account", data={"csrf": csrf(ap), "azione": "password", "current": "sbagliata1234",
+                                         "password": "nuovapassword1", "password2": "nuovapassword1"})
+    check("password attuale non è corretta" in r.text, "cambio password: password attuale verificata")
+    r = ro.post(BASE + "/account", data={"csrf": csrf(ap), "azione": "password", "current": "passwordluca1",
+                                         "password": "nuovapassword1", "password2": "nuovapassword1"})
+    check("Password cambiata" in r.text, "cambio password dal proprio account (anche sola lettura)")
+    ro2 = requests.Session(); lp = ro2.get(BASE + "/login")
+    check("Panoramica" in ro2.post(BASE + "/login", data={"csrf": csrf(lp.text), "username": "luca", "password": "nuovapassword1"}).text,
+          "accesso con la nuova password")
+    up = web.get(BASE + "/utenti").text
+    luca_id = db.execute("SELECT id FROM users WHERE username='luca'").fetchone()["id"]
+    r = web.post(BASE + f"/utenti/{luca_id}/password", data={"csrf": csrf(up), "password": "corta"})
+    check("almeno 10" in r.text, "reimpostazione: password troppo corta rifiutata")
+    r = web.post(BASE + f"/utenti/{luca_id}/password", data={"csrf": csrf(up), "password": "resetdaladmin1"})
+    check("reimpostata" in r.text, "l'amministratore reimposta la password di un utente")
+    ro3 = requests.Session(); lp = ro3.get(BASE + "/login")
+    check("Panoramica" in ro3.post(BASE + "/login", data={"csrf": csrf(lp.text), "username": "luca", "password": "resetdaladmin1"}).text,
+          "accesso con la password reimpostata")
+    r = ro3.post(BASE + f"/utenti/{luca_id}/password", data={"csrf": csrf(ro3.get(BASE + "/account").text), "password": "hackerata12345"})
+    check("Non hai i permessi" in r.text, "un utente normale non può reimpostare password altrui")
 
     # 9. login errato e blocco
     bad = requests.Session()

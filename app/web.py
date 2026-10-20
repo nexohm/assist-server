@@ -1,7 +1,7 @@
 """Dashboard web dell'installatore."""
+import asyncio
 import json
 import os
-import re
 import secrets
 import time
 from collections import defaultdict
@@ -12,10 +12,9 @@ from starlette.responses import JSONResponse, RedirectResponse, Response
 from starlette.routing import Route
 from starlette.templating import Jinja2Templates
 
-from . import db, sanitize, updates
+from . import db, notify, updates
 from .agent_api import is_online, ring
-from .security import (ROLE_LABELS, ROLES, can, hash_password, new_pair_code, new_setup_code,
-                       verify_password, DUMMY_HASH)
+from .security import ROLE_LABELS, ROLES, can, hash_password, new_pair_code, verify_password
 
 templates = Jinja2Templates(directory=os.path.join(os.path.dirname(__file__), "templates"))
 
@@ -29,21 +28,15 @@ COMMAND_STATUS = {"in_attesa": "In attesa", "inviato": "Inviato", "completato": 
 
 # ---------- utilità ----------
 
-def _as_ts(value):
-    if isinstance(value, datetime):
-        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
-    return db.parse_ts(value)
-
-
 def fmt_ts(value):
-    ts = _as_ts(value)
+    ts = db.parse_ts(value) if isinstance(value, str) else value
     if not ts:
         return "—"
     return ts.astimezone().strftime("%d/%m/%Y %H:%M")
 
 
 def ago(value):
-    ts = _as_ts(value)
+    ts = db.parse_ts(value) if isinstance(value, str) else value
     if not ts:
         return "mai"
     s = int((datetime.now(timezone.utc) - ts).total_seconds())
@@ -69,81 +62,6 @@ def current_user(request: Request):
     return db.one("SELECT * FROM users WHERE id = ? AND active = 1", uid) if uid else None
 
 
-def valid_color(value):
-    return isinstance(value, str) and re.fullmatch(r"#[0-9a-fA-F]{6}", value) is not None
-
-
-def client_ip(request: Request) -> str:
-    return request.client.host if request.client else "?"
-
-
-# ---------- limite ai tentativi (login e primo avvio) ----------
-# Due contatori: per indirizzo IP e per nome utente. Il secondo serve perché l'IP si può
-# falsificare (X-Forwarded-For) o cambiare: chi prova password su un utente viene fermato lo stesso.
-WINDOW = 15 * 60
-MAX_PER_IP = 5
-MAX_PER_USER = 10
-_failures: dict[str, list[float]] = defaultdict(list)
-
-
-def _recent(key):
-    now = time.time()
-    hits = [t for t in _failures.get(key, []) if now - t < WINDOW]
-    if hits:
-        _failures[key] = hits
-    else:
-        _failures.pop(key, None)
-    return hits
-
-
-def too_many_attempts(ip, username=None):
-    if len(_failures) > 10_000:  # niente crescita senza limite della memoria
-        for key in list(_failures):
-            _recent(key)
-    return len(_recent(f"ip:{ip}")) >= MAX_PER_IP or (username and len(_recent(f"user:{username}")) >= MAX_PER_USER)
-
-
-def record_failure(ip, username=None):
-    _failures[f"ip:{ip}"].append(time.time())
-    if username:
-        _failures[f"user:{username}"].append(time.time())
-
-
-# ---------- codice di installazione ----------
-# Al primo avvio la pagina /setup crea l'amministratore. Senza protezione, chiunque arrivi
-# per primo sul dominio (i bot scandagliano i nuovi certificati HTTPS in pochi minuti) diventa
-# amministratore. Per questo serve un codice che si legge solo dal server: nei log o con
-# "ha-suite codice".
-SETUP_CODE_PATH = os.path.join(db.DATA_DIR, "setup-code.txt")
-
-
-def ensure_setup_code():
-    if db.one("SELECT id FROM users LIMIT 1"):
-        if os.path.exists(SETUP_CODE_PATH):
-            os.remove(SETUP_CODE_PATH)
-        return None
-    if not os.path.exists(SETUP_CODE_PATH):
-        fd = os.open(SETUP_CODE_PATH, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        with os.fdopen(fd, "w") as f:
-            f.write(new_setup_code())
-    with open(SETUP_CODE_PATH) as f:
-        code = f.read().strip()
-    print("\n" + "=" * 60 + f"\n  Codice di installazione: {code}\n"
-          "  Serve per la prima configurazione dal browser.\n"
-          "  Per rivederlo: sudo ha-suite codice\n" + "=" * 60 + "\n", flush=True)
-    return code
-
-
-def setup_code_ok(given):
-    try:
-        with open(SETUP_CODE_PATH) as f:
-            expected = f.read().strip()
-    except OSError:
-        return False
-    given = "".join(ch for ch in (given or "").upper() if ch.isalnum())
-    return bool(expected) and secrets.compare_digest(given, expected.replace("-", ""))
-
-
 def csrf_token(request: Request):
     if "csrf" not in request.session:
         request.session["csrf"] = secrets.token_urlsafe(24)
@@ -167,6 +85,10 @@ def public_url(request: Request) -> str:
 
 def render(request, name, **ctx):
     updates.maybe_check()
+    if request.session.get("uid") and not db.get_setting("public_url"):
+        detected = guess_public_url(request)
+        if detected != db.get_setting("public_url_detected"):
+            db.set_setting("public_url_detected", detected)  # per i link nelle notifiche Telegram
     ctx.update(
         server_update=updates.server_update(),
         request=request,
@@ -188,11 +110,7 @@ def redirect(url, flash=None, request=None):
 
 async def read_form(request: Request):
     form = await request.form()
-    expected = request.session.get("csrf") or ""
-    given = form.get("csrf") or ""
-    # Un token vuoto non vale mai: altrimenti una sessione senza token (es. appena fatto il login)
-    # accetterebbe moduli senza token da qualsiasi sito.
-    if not expected or not isinstance(given, str) or not secrets.compare_digest(given, expected):
+    if not secrets.compare_digest(form.get("csrf", ""), request.session.get("csrf", "")):
         return None
     return form
 
@@ -227,16 +145,9 @@ async def setup(request: Request):
         return redirect("/login")
     if request.method == "GET":
         return render(request, "setup.html", errors=[])
-    ip = client_ip(request)
-    if too_many_attempts(ip):
-        return render(request, "setup.html", errors=["Troppi tentativi falliti. Riprova tra 15 minuti."])
     form = await read_form(request)
     if form is None:
         return redirect("/setup")
-    if not setup_code_ok(form.get("setup_code")):
-        record_failure(ip)
-        return render(request, "setup.html", errors=["Codice di installazione errato. Lo trovi nei log del server "
-                                                     "o con il comando: sudo ha-suite codice"], form=form)
     errors = []
     company = form.get("company_name", "").strip()
     username = form.get("username", "").strip().lower()
@@ -251,60 +162,44 @@ async def setup(request: Request):
         errors.append("Le due password non coincidono.")
     if errors:
         return render(request, "setup.html", errors=errors, form=form)
-    # Ultimo controllo e creazione insieme: due richieste contemporanee non creano due amministratori.
-    with db.connect() as c:
-        if c.execute("SELECT id FROM users LIMIT 1").fetchone():
-            return redirect("/login")
-        uid = c.execute("INSERT INTO users(username, full_name, password_hash, role, created_at) "
-                        "VALUES(?, ?, ?, 'admin', ?)", (username, form.get("full_name", "").strip(),
-                                                        hash_password(password), db.now())).lastrowid
     db.set_setting("company_name", company)
-    color = form.get("brand_color", "")
-    db.set_setting("brand_color", color if valid_color(color) else "#0f766e")
-    try:
-        os.remove(SETUP_CODE_PATH)
-    except OSError:
-        pass
-    request.session.clear()
+    db.set_setting("brand_color", form.get("brand_color") or "#0f766e")
+    uid = db.run("INSERT INTO users(username, full_name, password_hash, role, created_at) VALUES(?, ?, ?, 'admin', ?)",
+                 username, form.get("full_name", "").strip(), hash_password(password), db.now())
     request.session["uid"] = uid
     return redirect("/", "Configurazione completata. Benvenuto!", request)
+
+
+_failed_logins: dict[str, list[float]] = defaultdict(list)
 
 
 async def login(request: Request):
     if not db.one("SELECT id FROM users LIMIT 1"):
         return redirect("/setup")
     next_url = request.query_params.get("next", "/")
-    # Solo percorsi interni: niente "//sito", "/\\sito" o caratteri di controllo che i browser
-    # potrebbero interpretare come un altro dominio.
-    if (not next_url.startswith("/") or next_url.startswith("//") or "\\" in next_url
-            or any(ord(ch) < 32 for ch in next_url)):
+    if not next_url.startswith("/") or next_url.startswith("//"):
         next_url = "/"
     if request.method == "GET":
         return render(request, "login.html", error=None, next=next_url)
+    ip = request.client.host if request.client else "?"
+    recent = [t for t in _failed_logins[ip] if time.time() - t < 900]
+    _failed_logins[ip] = recent
+    if len(recent) >= 5:
+        return render(request, "login.html", error="Troppi tentativi falliti. Riprova tra 15 minuti.", next=next_url)
     form = await read_form(request)
     if form is None:
         return redirect("/login")
-    ip = client_ip(request)
-    username = form.get("username", "").strip().lower()[:100]
-    if too_many_attempts(ip, username):
-        return render(request, "login.html", error="Troppi tentativi falliti. Riprova tra 15 minuti.", next=next_url)
-    user = db.one("SELECT * FROM users WHERE username = ? AND active = 1", username)
-    # Anche per un utente inesistente si calcola un hash: il tempo di risposta non rivela chi esiste.
-    valid = verify_password(form.get("password", ""), user["password_hash"] if user else DUMMY_HASH)
-    if not user or not valid:
-        record_failure(ip, username)
+    user = db.one("SELECT * FROM users WHERE username = ? AND active = 1", form.get("username", "").strip().lower())
+    if not user or not verify_password(form.get("password", ""), user["password_hash"]):
+        _failed_logins[ip].append(time.time())
         return render(request, "login.html", error="Nome utente o password errati.", next=next_url)
-    _failures.pop(f"ip:{ip}", None)
-    _failures.pop(f"user:{username}", None)
+    _failed_logins.pop(ip, None)
     request.session.clear()
     request.session["uid"] = user["id"]
     return redirect(next_url)
 
 
 async def logout(request: Request):
-    # Con il token CSRF: un altro sito non può far uscire l'utente a sua insaputa.
-    if await read_form(request) is None:
-        return redirect("/")
     request.session.clear()
     return redirect("/login")
 
@@ -318,7 +213,8 @@ def plant_status(p):
         return "da_abbinare"
     if not is_online(p):
         return "offline"
-    return sanitize.stored_diagnostics(p["last_diag"]).get("status", "ok")
+    diag = db.loads(p["last_diag"], {}) or {}
+    return diag.get("status", "ok")
 
 
 @guard()
@@ -327,7 +223,7 @@ async def dashboard(request: Request):
                      "ORDER BY c.name, p.name")
     for p in plants:
         p["status"] = plant_status(p)
-        p["diag"] = sanitize.stored_diagnostics(p["last_diag"])
+        p["diag"] = db.loads(p["last_diag"], {}) or {}
     order = {"offline": 0, "critico": 1, "attenzione": 2, "da_abbinare": 3, "ok": 4, "revocato": 5}
     plants.sort(key=lambda p: order.get(p["status"], 9))
     counts = defaultdict(int)
@@ -424,7 +320,7 @@ def _load_plant(pid):
     if p:
         p["status"] = plant_status(p)
         p["online"] = is_online(p)
-        p["diag"] = sanitize.stored_diagnostics(p["last_diag"])
+        p["diag"] = db.loads(p["last_diag"], {}) or {}
     return p
 
 
@@ -476,9 +372,7 @@ async def plant_command(request: Request):
     name = request.state.form.get("name", "")
     if not plant or name not in ALLOWED_COMMANDS:
         return render(request, "error.html", message="Comando non valido.")
-    until = db.parse_ts(plant["consent_until"])
-    consent = plant["consent"] and not (until and until < datetime.now(timezone.utc))
-    if name != "ping" and not consent:
+    if name != "ping" and not plant["consent"]:
         return redirect(f"/impianti/{pid}", "Il cliente ha sospeso l'accesso remoto: comando non inviato.", request)
     db.run("INSERT INTO commands(plant_id, name, args, created_by, created_at) VALUES(?, ?, '{}', ?, ?)",
            plant["id"], name, request.state.user["id"], db.now())
@@ -513,7 +407,7 @@ async def ticket_detail(request: Request):
                "JOIN clients c ON c.id = p.client_id WHERE t.id = ?", request.path_params["tid"])
     if not t:
         return render(request, "error.html", message="Ticket non trovato.")
-    t["diag"] = sanitize.stored_diagnostics(t["diagnostics"])
+    t["diag"] = db.loads(t["diagnostics"])
     messages = db.all_("SELECT * FROM ticket_messages WHERE ticket_id = ? ORDER BY id", t["id"])
     users = db.all_("SELECT id, username, full_name FROM users WHERE active = 1 AND role != 'lettura' ORDER BY username")
     return render(request, "ticket_detail.html", t=t, messages=messages, users=users)
@@ -522,15 +416,8 @@ async def ticket_detail(request: Request):
 @guard("edit")
 async def ticket_reply(request: Request):
     tid = request.path_params["tid"]
-    if not db.one("SELECT id FROM tickets WHERE id = ?", tid):
-        return render(request, "error.html", message="Ticket non trovato.")
     form = request.state.form
     text = form.get("text", "").strip()
-    assigned = form.get("assigned_to")
-    if assigned:
-        if not assigned.isdigit() or not db.one("SELECT id FROM users WHERE id = ? AND active = 1 AND role != 'lettura'",
-                                                int(assigned)):
-            return redirect(f"/ticket/{tid}", "Utente da assegnare non valido.", request)
     ts = db.now()
     if text:
         u = request.state.user
@@ -539,6 +426,7 @@ async def ticket_reply(request: Request):
     status = form.get("status")
     if status in TICKET_STATUS:
         db.run("UPDATE tickets SET status = ? WHERE id = ?", status, tid)
+    assigned = form.get("assigned_to")
     if assigned is not None:
         db.run("UPDATE tickets SET assigned_to = ? WHERE id = ?", int(assigned) if assigned else None, tid)
     db.run("UPDATE tickets SET updated_at = ? WHERE id = ?", ts, tid)
@@ -571,6 +459,48 @@ async def users_page(request: Request):
     return render(request, "users.html", users=users, errors=errors)
 
 
+MIN_PASSWORD = 10
+
+
+@guard()
+async def account_page(request: Request):
+    """Il mio account: nome visualizzato e cambio password (per qualsiasi ruolo)."""
+    user = request.state.user
+    errors = []
+    if request.method == "POST":
+        form = request.state.form
+        if form.get("azione") == "profilo":
+            db.run("UPDATE users SET full_name = ? WHERE id = ?", form.get("full_name", "").strip(), user["id"])
+            return redirect("/account", "Profilo aggiornato.", request)
+        current, new, new2 = form.get("current", ""), form.get("password", ""), form.get("password2", "")
+        if not verify_password(current, user["password_hash"]):
+            errors.append("La password attuale non è corretta.")
+        if len(new) < MIN_PASSWORD:
+            errors.append(f"La nuova password deve avere almeno {MIN_PASSWORD} caratteri.")
+        if new != new2:
+            errors.append("Le due password nuove non coincidono.")
+        if new and new == current:
+            errors.append("La nuova password deve essere diversa da quella attuale.")
+        if not errors:
+            db.run("UPDATE users SET password_hash = ? WHERE id = ?", hash_password(new), user["id"])
+            return redirect("/account", "Password cambiata.", request)
+    return render(request, "account.html", errors=errors)
+
+
+@guard("users")
+async def user_password(request: Request):
+    """L'amministratore reimposta la password di un altro utente (es. password dimenticata)."""
+    uid = request.path_params["uid"]
+    target = db.one("SELECT * FROM users WHERE id = ?", uid)
+    new = request.state.form.get("password", "")
+    if not target:
+        return redirect("/utenti", "Utente non trovato.", request)
+    if len(new) < MIN_PASSWORD:
+        return redirect("/utenti", f"La password deve avere almeno {MIN_PASSWORD} caratteri.", request)
+    db.run("UPDATE users SET password_hash = ? WHERE id = ?", hash_password(new), uid)
+    return redirect("/utenti", f"Password di {target['username']} reimpostata: comunicagliela e chiedigli di cambiarla.", request)
+
+
 @guard("users")
 async def user_toggle(request: Request):
     uid = request.path_params["uid"]
@@ -588,7 +518,7 @@ async def settings_page(request: Request):
         if name:
             db.set_setting("company_name", name)
         color = form.get("brand_color", "")
-        if valid_color(color):
+        if color.startswith("#") and len(color) == 7:
             db.set_setting("brand_color", color)
         url = form.get("public_url", "").strip().rstrip("/")
         if url and not (url.startswith("https://") or url.startswith("http://")):
@@ -596,7 +526,61 @@ async def settings_page(request: Request):
         db.set_setting("public_url", url)
         return redirect("/impostazioni", "Impostazioni salvate.", request)
     return render(request, "settings.html", guessed_url=guess_public_url(request),
-                  saved_url=db.get_setting("public_url", ""))
+                  saved_url=db.get_setting("public_url", ""),
+                  tg_token_set=bool(db.get_setting("telegram_token")),
+                  tg_chat_id=db.get_setting("telegram_chat_id", ""),
+                  tg_events={k: (label, db.get_setting(k, "1") == "1") for k, label in notify.EVENTS.items()})
+
+
+@guard("settings")
+async def telegram_settings(request: Request):
+    form = request.state.form
+    action = form.get("azione", "salva")
+    token = form.get("telegram_token", "").strip()
+    if token:
+        db.set_setting("telegram_token", token)
+    if action == "rimuovi":
+        for k in ("telegram_token", "telegram_chat_id"):
+            db.set_setting(k, "")
+        return redirect("/impostazioni#telegram", "Notifiche Telegram disattivate.", request)
+    if action == "rileva":
+        if not db.get_setting("telegram_token"):
+            return redirect("/impostazioni#telegram", "Inserisci prima il token del bot.", request)
+        try:
+            chat_id, name = await asyncio.to_thread(notify.detect_chat_id, db.get_setting("telegram_token"))
+        except RuntimeError as e:
+            return redirect("/impostazioni#telegram", f"Telegram: {e}", request)
+        if not chat_id:
+            return redirect("/impostazioni#telegram",
+                            "Nessun messaggio trovato: apri il bot su Telegram, scrivigli /start e riprova.", request)
+        db.set_setting("telegram_chat_id", chat_id)
+        return redirect("/impostazioni#telegram", f"Chat trovata: {name or chat_id}. Ora prova con «Invia prova».", request)
+    chat_id = form.get("telegram_chat_id", "").strip()
+    if chat_id:
+        db.set_setting("telegram_chat_id", chat_id)
+    for key in notify.EVENTS:
+        db.set_setting(key, "1" if form.get(key) == "1" else "0")
+    if action == "prova":
+        if not notify.configured():
+            return redirect("/impostazioni#telegram", "Servono sia il token del bot sia il chat ID.", request)
+        try:
+            await asyncio.to_thread(notify.send_now, f"✅ Notifiche di <b>{db.get_setting('company_name', 'Assistenza')}</b> "
+                                                     "attive: riceverai qui gli avvisi sui tuoi impianti.")
+        except RuntimeError as e:
+            return redirect("/impostazioni#telegram", f"Invio non riuscito: {e}", request)
+        return redirect("/impostazioni#telegram", "Messaggio di prova inviato: controlla Telegram.", request)
+    return redirect("/impostazioni#telegram", "Impostazioni Telegram salvate.", request)
+
+
+@guard("edit")
+async def plant_ha_url(request: Request):
+    pid = request.path_params["pid"]
+    url = request.state.form.get("ha_url_manual", "").strip().rstrip("/")
+    if url and not url.startswith(("http://", "https://")):
+        return redirect(f"/impianti/{pid}", "L'indirizzo deve iniziare con http:// o https://", request)
+    db.run("UPDATE plants SET ha_url_manual = ? WHERE id = ?", url or None, pid)
+    return redirect(f"/impianti/{pid}", "Indirizzo di Home Assistant salvato." if url else
+                    "Indirizzo manuale rimosso: uso quello comunicato dall'agente.", request)
 
 
 async def health(request: Request):
@@ -625,5 +609,9 @@ routes = [
     Route("/ticket/{tid:int}/rispondi", ticket_reply, methods=["POST"]),
     Route("/utenti", users_page, methods=["GET", "POST"]),
     Route("/utenti/{uid:int}/attiva", user_toggle, methods=["POST"]),
+    Route("/utenti/{uid:int}/password", user_password, methods=["POST"]),
+    Route("/account", account_page, methods=["GET", "POST"]),
     Route("/impostazioni", settings_page, methods=["GET", "POST"]),
+    Route("/impostazioni/telegram", telegram_settings, methods=["POST"]),
+    Route("/impianti/{pid:int}/ha-url", plant_ha_url, methods=["POST"]),
 ]

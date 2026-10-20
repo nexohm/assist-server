@@ -17,7 +17,8 @@ STATES = [
 ]
 ROUTES = {
     "/core/api/states": STATES,
-    "/core/api/config": {"version": "2026.10.1", "location_name": "Casa Bianchi"},
+    "/core/api/config": {"version": "2026.10.1", "location_name": "Casa Bianchi",
+                         "internal_url": "http://192.168.1.50:8123", "external_url": "https://bianchi.duckdns.org"},
     "/core/info": {"result": "ok", "data": {"version": "2026.10.1"}},
     "/os/info": {"result": "ok", "data": {"version": "16.2"}},
     "/host/info": {"result": "ok", "data": {"disk_used": 26.4, "disk_total": 31.0}},

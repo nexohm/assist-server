@@ -5,7 +5,6 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{% block title %}{{ company }}{% endblock %} · {{ company }}</title>
 <link rel="stylesheet" href="/static/style.css">
-<script src="/static/app.js" defer></script>
 <style>:root { --brand: {{ brand_color }}; }</style>
 </head>
 <body>
@@ -21,7 +20,7 @@
     {% if can(user, 'settings') %}<a href="/impostazioni" class="{{ 'on' if p.startswith('/impostazioni') }}">Impostazioni</a>{% endif %}
   </nav>
   <div class="who">
-    <span>{{ user.full_name or user.username }} · {{ ROLE_LABELS[user.role] }}</span>
+    <a href="/account" class="who-link">{{ user.full_name or user.username }} · {{ ROLE_LABELS[user.role] }}</a>
     <form class="inline" method="post" action="/logout"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="link-btn">Esci</button></form>
   </div>
 </div></header>

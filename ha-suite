@@ -10,6 +10,40 @@ fi
 
 dc() { docker compose "$@"; }
 
+# Da dove scaricare gli aggiornamenti dei file di gestione (impostato da install.sh nel .env)
+REPO_RAW="https://raw.githubusercontent.com/nexohm/assist-server/main"
+if [[ -r .env ]] && grep -q '^SUITE_REPO_RAW=' .env; then
+  REPO_RAW=$(grep '^SUITE_REPO_RAW=' .env | cut -d= -f2-)
+fi
+
+# Aggiorna questo script, docker-compose.yml e Caddyfile. Se lo script è cambiato,
+# rilancia la versione nuova (una sola volta) così l'aggiornamento usa sempre l'ultima logica.
+self_update() {
+  local tmp; tmp=$(mktemp -d)
+  for f in ha-suite docker-compose.yml Caddyfile; do
+    if ! curl -fsSL "$REPO_RAW/$f" -o "$tmp/$f" || [[ ! -s "$tmp/$f" ]]; then
+      echo "  Attenzione: impossibile scaricare $f, tengo quello attuale."
+      rm -f "$tmp/$f"
+    fi
+  done
+  [[ -f "$tmp/ha-suite" ]] && ! bash -n "$tmp/ha-suite" 2>/dev/null && rm -f "$tmp/ha-suite"
+  for f in docker-compose.yml Caddyfile; do
+    if [[ -f "$tmp/$f" ]] && ! cmp -s "$tmp/$f" "$f"; then
+      cp -f "$f" "$f.bak" 2>/dev/null || true
+      mv -f "$tmp/$f" "$f"
+      echo "  $f aggiornato (copia precedente: $f.bak)"
+    fi
+  done
+  if [[ -f "$tmp/ha-suite" ]] && ! cmp -s "$tmp/ha-suite" ha-suite; then
+    install -m 755 "$tmp/ha-suite" ha-suite
+    rm -rf "$tmp"
+    echo "  Script ha-suite aggiornato: riprendo con la versione nuova."
+    export HA_SUITE_UPDATED=1
+    exec ./ha-suite "$@"
+  fi
+  rm -rf "$tmp"
+}
+
 case "${1:-aiuto}" in
   stato)
     dc ps
@@ -20,15 +54,14 @@ case "${1:-aiuto}" in
   riavvia)
     dc up -d
     ;;
-  codice)
-    # Codice di installazione per la prima configurazione dal browser
-    if code=$(dc exec -T suite cat /data/setup-code.txt 2>/dev/null); then
-      echo "Codice di installazione: $code"
-    else
-      echo "Nessun codice: la configurazione iniziale è già stata fatta."
-    fi
+  versione)
+    dc exec -T suite printenv SUITE_VERSION || echo "server non in esecuzione"
     ;;
   aggiorna)
+    if [[ -z "${HA_SUITE_UPDATED:-}" ]]; then
+      echo "Controllo i file di gestione..."
+      self_update "$@"
+    fi
     echo "Copia di sicurezza prima dell'aggiornamento..."
     "$0" backup
     dc pull
@@ -69,10 +102,10 @@ Uso: ./ha-suite <comando>
 
   stato        mostra se il server è in funzione
   log          segue i log del server
-  aggiorna     backup + scarica l'ultima versione + riavvia
+  aggiorna     aggiorna anche questo script, backup, scarica l'ultima versione, riavvia
+  versione     mostra la versione del server in esecuzione
   backup       salva tutti i dati in ./backup (tiene gli ultimi 14)
   ripristina   ripristina un backup:  ./ha-suite ripristina backup/<file>.tar.gz
-  codice       mostra il codice di installazione (solo prima della configurazione iniziale)
   riavvia      applica modifiche al file .env
   disinstalla  rimuove i container (i dati restano)
 HELP
