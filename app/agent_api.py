@@ -8,10 +8,11 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
-from . import db, notify, sanitize
+from . import db, notify, sanitize, secrets_store
 from .security import hash_token, new_token, normalize_pair_code
 
 PROTOCOL_VERSION = 1
+SUSPENDED = 423        # azienda dell'installatore sospesa dal gestore del server
 MAX_WAIT = 25          # secondi massimi di long-polling
 MAX_BODY = 512 * 1024  # una diagnostica sta comodamente sotto i 512 KB
 
@@ -24,6 +25,12 @@ def ring(plant_id: int):
     bell = _bells.get(plant_id)
     if bell:
         bell.set()
+
+
+def branding(plant_id):
+    """Nome e colore dell'azienda a cui appartiene l'impianto: li vede il cliente nel pannello e nelle notifiche."""
+    co = db.company_of_plant(plant_id) or {}
+    return {"server_name": co.get("name") or "Assistenza", "brand_color": co.get("brand_color") or "#0f766e"}
 
 
 def error(status, message):
@@ -75,9 +82,14 @@ def authenticate(request: Request):
     auth = request.headers.get("authorization", "")
     if not auth.startswith("Bearer "):
         return None, error(401, "token mancante")
-    plant = db.one("SELECT * FROM plants WHERE token_hash = ? AND revoked = 0", hash_token(auth[7:].strip()))
+    plant = db.one("SELECT p.*, co.suspended_at AS company_suspended FROM plants p JOIN clients c ON c.id = p.client_id "
+                   "JOIN companies co ON co.id = c.company_id WHERE p.token_hash = ? AND p.revoked = 0",
+                   hash_token(auth[7:].strip()))
     if not plant:
         return None, error(401, "token non valido o impianto revocato")
+    if plant["company_suspended"]:
+        # l'abbinamento resta valido: quando il gestore riattiva l'azienda, l'agente riparte da solo
+        return None, error(SUSPENDED, "assistenza sospesa: l'installatore al momento non segue l'impianto")
     db.run("UPDATE plants SET last_seen = ?, agent_version = COALESCE(?, agent_version) WHERE id = ?",
            db.now(), sanitize.text(request.headers.get("x-agent-version"), 40), plant["id"])
     return plant, None
@@ -89,7 +101,8 @@ async def pair(request: Request):
     except BadRequest as e:
         return error(e.status, str(e))
     code = normalize_pair_code(sanitize.text(data.get("code"), 20) or "")
-    plant = db.one("SELECT * FROM plants WHERE pair_code = ? AND revoked = 0", code) if code else None
+    plant = db.one("SELECT p.* FROM plants p JOIN clients c ON c.id = p.client_id JOIN companies co ON co.id = c.company_id "
+                   "WHERE p.pair_code = ? AND p.revoked = 0 AND co.suspended_at IS NULL", code) if code else None
     if not plant:
         return error(404, "codice di abbinamento inesistente o già usato")
     expires = db.parse_ts(plant["pair_expires"])
@@ -108,8 +121,7 @@ async def pair(request: Request):
     return JSONResponse({
         "plant_id": plant["id"],
         "token": token,
-        "server_name": db.get_setting("company_name", "Assistenza"),
-        "brand_color": db.get_setting("brand_color", "#0f766e"),
+        **branding(plant["id"]),
         "protocol": PROTOCOL_VERSION,
     })
 
@@ -133,18 +145,30 @@ async def report(request: Request):
             return v if v and re.fullmatch(r"https?://[^\s\"'<>]+", v) else None
         db.run("UPDATE plants SET ha_internal_url = ?, ha_external_url = ? WHERE id = ?",
                clean_url(urls.get("internal")), clean_url(urls.get("external")), plant["id"])
+    admin = sanitize.admin_state(data.get("admin"))
+    if admin is not None:
+        db.run("UPDATE plants SET admin_state = ? WHERE id = ?", json.dumps(admin), plant["id"])
+        if not admin["active"] or not admin["username"]:
+            secrets_store.drop(plant["id"])  # accesso chiuso o utente cancellato: la password non vale più
+        # richiesta soddisfatta (accesso concesso) o rifiutata dal cliente: non va più riproposta
+        req = plant.get("admin_requested_at")
+        if req and (admin["active"] or admin["declined"] == req):
+            db.run("UPDATE plants SET admin_requested_at = NULL, admin_requested_by = NULL "
+                   "WHERE id = ? AND admin_requested_at = ?", plant["id"], req)
     diag = sanitize.diagnostics(data.get("diagnostics"))
     if consent and diag:
         db.run("UPDATE plants SET last_diag = ?, last_diag_at = ? WHERE id = ?",
                json.dumps(diag), db.now(), plant["id"])
     pending = db.one("SELECT COUNT(*) AS n FROM commands WHERE plant_id = ? AND status = 'in_attesa'", plant["id"])
-    # Nome e colore dell'installatore viaggiano a ogni rapporto: se cambiano, il pannello del cliente si aggiorna.
+    # Nome e colore dell'azienda viaggiano a ogni rapporto: se cambiano, il pannello del cliente si aggiorna.
     # Ultimo aggiornamento dei ticket dell'impianto: se cambia, l'agente li rilegge e avvisa il cliente.
     last_ticket = db.one("SELECT MAX(updated_at) AS ts FROM tickets WHERE plant_id = ?", plant["id"])
+    requested = db.one("SELECT admin_requested_at, admin_requested_by FROM plants WHERE id = ?", plant["id"])
     return JSONResponse({"ok": True, "pending_commands": pending["n"],
+                         "admin_requested": requested["admin_requested_at"],
+                         "admin_requested_by": requested["admin_requested_by"] if requested["admin_requested_at"] else None,
                          "tickets_updated": last_ticket["ts"],
-                         "server_name": db.get_setting("company_name", "Assistenza"),
-                         "brand_color": db.get_setting("brand_color", "#0f766e")})
+                         **branding(plant["id"])})
 
 
 RESEND_AFTER = 60   # secondi senza risultato prima di rispedire un comando
@@ -200,7 +224,17 @@ async def command_result(request: Request):
     except BadRequest as e:
         return error(e.status, str(e))
     ok = data.get("ok") is True
-    if ok and cmd["name"] == "run_diagnostics":
+    if ok and cmd["name"] == "admin_password":
+        # La password resta solo in memoria, per pochi minuti: nel database va un segnaposto.
+        res = data.get("result") if isinstance(data.get("result"), dict) else {}
+        username, password = sanitize.text(res.get("username"), 60), res.get("password")
+        if (username and re.fullmatch(r"[a-z0-9_]{3,60}", username) and isinstance(password, str)
+                and re.fullmatch(r"[A-Za-z0-9]{16,64}", password)):
+            secrets_store.put(cmd["id"], plant["id"], username, password)
+            payload = {"username": username, "password": "(mostrata una volta, non salvata)"}
+        else:
+            ok, payload = False, {"error": "credenziali non valide"}
+    elif ok and cmd["name"] == "run_diagnostics":
         payload = sanitize.diagnostics(data.get("result"))
         ok = payload is not None
         if not ok:
@@ -248,8 +282,11 @@ async def tickets(request: Request):
         notify.new_ticket(tid, plant["id"], title, description)
         return JSONResponse({"ticket_id": tid})
 
-    rows = db.all_("SELECT id, title, status, created_at, updated_at FROM tickets WHERE plant_id = ? "
-                   "ORDER BY updated_at DESC LIMIT 50", plant["id"])
+    # chi segue la richiesta: il cliente vede nelle notifiche il nome del tecnico
+    rows = db.all_("SELECT t.id, t.title, t.status, t.created_at, t.updated_at, "
+                   "COALESCE(NULLIF(TRIM(u.full_name), ''), u.username) AS assigned_name "
+                   "FROM tickets t LEFT JOIN users u ON u.id = t.assigned_to WHERE t.plant_id = ? "
+                   "ORDER BY t.updated_at DESC LIMIT 50", plant["id"])
     for t in rows:
         t["messages"] = db.all_("SELECT author_type, author_name, text, created_at FROM ticket_messages "
                                 "WHERE ticket_id = ? ORDER BY id", t["id"])

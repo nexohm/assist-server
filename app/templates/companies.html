@@ -1,0 +1,117 @@
+{% extends "base.html" %}
+{% block title %}Aziende{% endblock %}
+{% block content %}
+<div class="head"><h1>Aziende</h1></div>
+{% if reset %}
+<div class="card secret" style="margin-bottom:16px">
+  <h2>Link di recupero per {{ reset.username }} ({{ reset.company }})</h2>
+  <p class="small" style="margin-top:0">Mandalo a {{ reset.username }}: aprendolo sceglierà una password nuova (tu non la vedi).
+    Vale <b>{{ reset_minutes }} minuti</b> e una volta sola; non viene mostrato di nuovo.</p>
+  <div class="row"><code class="grow" style="word-break:break-all">{{ reset.url }}</code>
+    <button type="button" class="btn ghost small copy" data-copy="{{ reset.url }}">Copia link</button></div>
+</div>
+{% endif %}
+<div class="stats">
+  <div class="stat"><b>{{ totals.companies }}</b><span>Aziende</span></div>
+  <div class="stat"><b>{{ totals.clients }}</b><span>Clienti</span></div>
+  <div class="stat"><b>{{ totals.plants }}</b><span>Impianti</span></div>
+</div>
+<div class="grid g-side">
+  <div class="stack">
+    <div class="card table-wrap">
+      <p class="muted small" style="margin-top:0">Ogni azienda vede e gestisce solo i propri clienti, impianti, ticket e utenti.
+        Da qui vedi soltanto quanti ne ha: i dati delle altre aziende restano loro.<br>
+        Nei limiti contano tutti gli impianti inseriti, anche quelli non ancora abbinati o revocati; un limite non scende
+        sotto quelli che l'azienda ha già: prima deve eliminarne qualcuno.</p>
+      <table>
+        <tr><th>Azienda</th><th class="num">Clienti</th><th class="num">Impianti</th><th>Creata</th></tr>
+        {% for c in companies %}
+        <tr><td><span class="swatch" style="background:{{ c.brand_color }}" aria-hidden="true"></span>
+            <a href="#a{{ c.id }}"><b>{{ c.name }}</b></a>{% if c.id == user.company_id %} <span class="badge s-ok">la tua</span>{% endif %}
+            {% if c.suspended_at %} <span class="badge s-offline">sospesa</span>{% endif %}</td>
+          <td class="num">{{ c.n_clients }}{% if c.max_clients %}<span class="muted small"> / {{ c.max_clients }}</span>{% endif %}</td>
+          <td class="num">{{ c.n_plants }}{% if c.max_plants %}<span class="muted small"> / {{ c.max_plants }}</span>{% endif %}</td>
+          <td class="small muted">{{ c.created_at | ago }}</td></tr>
+        {% endfor %}
+      </table>
+    </div>
+
+    {% for c in companies %}
+    <div class="card" id="a{{ c.id }}">
+      <h2><span class="swatch" style="background:{{ c.brand_color }}" aria-hidden="true"></span>{{ c.name }}
+        {% if c.suspended_at %}<span class="badge s-offline">sospesa {{ c.suspended_at | ago }}</span>{% endif %}</h2>
+
+      <form method="post" action="/aziende/{{ c.id }}/limiti" class="row" style="align-items:flex-end">
+        <input type="hidden" name="csrf" value="{{ csrf }}">
+        <div><label for="mc{{ c.id }}">Massimo clienti</label>
+          <input id="mc{{ c.id }}" name="max_clients" inputmode="numeric" value="{{ c.max_clients or '' }}" placeholder="nessun limite" style="width:150px"></div>
+        <div><label for="mp{{ c.id }}">Massimo impianti</label>
+          <input id="mp{{ c.id }}" name="max_plants" inputmode="numeric" value="{{ c.max_plants or '' }}" placeholder="nessun limite" style="width:150px"></div>
+        <button class="btn ghost small">Salva limiti</button>
+      </form>
+
+      {% if c.id != user.company_id %}
+      {% if c.admins %}
+      <form method="post" action="/aziende/{{ c.id }}/recupero" class="row" style="margin-top:12px">
+        <input type="hidden" name="csrf" value="{{ csrf }}">
+        <label for="ad{{ c.id }}" style="margin:0">Password dimenticata da</label>
+        <select id="ad{{ c.id }}" name="user_id" style="width:auto">
+          {% for a in c.admins %}<option value="{{ a.id }}">{{ a.full_name or a.username }} ({{ a.username }})</option>{% endfor %}</select>
+        <button class="btn ghost small">Crea link di recupero</button>
+      </form>
+      {% endif %}
+      <div class="row" style="margin-top:12px">
+        <form method="post" action="/aziende/{{ c.id }}/sospendi" class="inline"><input type="hidden" name="csrf" value="{{ csrf }}">
+          {% if c.suspended_at %}<button class="btn small">Riattiva</button>
+          {% else %}<button class="btn ghost small" data-confirm="Sospendere «{{ c.name }}»? I suoi utenti non potranno entrare e i suoi impianti andranno in pausa. Nessun dato viene cancellato.">Sospendi</button>{% endif %}
+        </form>
+      </div>
+      <details style="margin-top:12px"><summary class="small">Elimina l'azienda</summary>
+        <form method="post" action="/aziende/{{ c.id }}/elimina" style="margin-top:8px">
+          <input type="hidden" name="csrf" value="{{ csrf }}">
+          <p class="warnbox small" style="margin-top:0">Si cancellano per sempre utenti, clienti, impianti, ticket e impostazioni di
+            «{{ c.name }}» ({{ c.n_clients }} clienti, {{ c.n_plants }} impianti). I suoi impianti risultano revocati e l'eventuale
+            accesso amministratore aperto si chiude. Prima viene fatta in automatico una copia di sicurezza del database.</p>
+          <label for="cn{{ c.id }}">Scrivi il nome dell'azienda</label>
+          <input id="cn{{ c.id }}" name="confirm_name" required autocomplete="off" placeholder="{{ c.name }}">
+          <label for="pw{{ c.id }}">La tua password</label>
+          <input id="pw{{ c.id }}" type="password" name="password" required autocomplete="current-password">
+          <p style="margin-top:12px"><button class="btn danger">Elimina definitivamente</button></p>
+        </form>
+      </details>
+      {% else %}
+      <p class="muted small">È la tua azienda: utenti e impostazioni li gestisci dalle pagine Utenti e Impostazioni.</p>
+      {% endif %}
+    </div>
+    {% endfor %}
+  </div>
+
+  <div class="card">
+    <h2>Nuova azienda</h2>
+    {% if errors %}<div class="errors">{% for e in errors %}<p>{{ e }}</p>{% endfor %}</div>{% endif %}
+    <form method="post" action="/aziende"><input type="hidden" name="csrf" value="{{ csrf }}">
+      <label for="name">Nome dell'azienda</label>
+      <input id="name" name="name" required maxlength="80" placeholder="Es. Rossi Impianti" value="{{ form.name }}">
+      <p class="muted small">Lo vedranno i suoi clienti nel pannello di Home Assistant e nelle notifiche.</p>
+      <label for="brand_color">Colore del marchio</label>
+      <input id="brand_color" type="color" name="brand_color" value="{{ form.brand_color or '#0f766e' }}">
+      <div class="row">
+        <div><label for="max_clients">Massimo clienti</label>
+          <input id="max_clients" name="max_clients" inputmode="numeric" placeholder="nessun limite" value="{{ form.max_clients }}" style="width:140px"></div>
+        <div><label for="max_plants">Massimo impianti</label>
+          <input id="max_plants" name="max_plants" inputmode="numeric" placeholder="nessun limite" value="{{ form.max_plants }}" style="width:140px"></div>
+      </div>
+      <h3 style="margin:18px 0 4px">Primo amministratore</h3>
+      <p class="muted small" style="margin-top:0">Gestirà da solo tecnici, clienti, impianti e impostazioni della sua azienda.</p>
+      <label for="full_name">Nome e cognome</label><input id="full_name" name="full_name" value="{{ form.full_name }}">
+      <label for="username">Nome utente</label><input id="username" name="username" required autocomplete="off" value="{{ form.username }}">
+      <label for="email">Email <span class="muted small">(facoltativa, per recuperare la password)</span></label>
+      <input id="email" type="email" name="email" autocomplete="off" value="{{ form.email }}">
+      <label for="password">Password iniziale</label>
+      <input id="password" type="password" name="password" required minlength="10" autocomplete="new-password">
+      <p class="muted small" style="margin:4px 0 0">Al primo accesso dovrà sceglierne una sua.</p>
+      <p style="margin-top:16px"><button class="btn">Crea azienda</button></p>
+    </form>
+  </div>
+</div>
+{% endblock %}

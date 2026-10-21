@@ -3,6 +3,22 @@
 <span class="badge s-{{ s }}">{{ labels.get(s, s) }}</span>
 {%- endmacro %}
 
+{# Stato completo di un impianto: salute (ultima diagnostica), raggiungibilità e permesso del cliente #}
+{% macro plant_state(p) -%}
+<span class="pstate">
+{%- if p.paired_at and not p.revoked -%}
+  {%- set d = p.diag.status if p.diag else none -%}
+  {%- if p.status != 'offline' %}{{ status_badge(p.status) }}{% elif d %}{{ status_badge(d) }}{% endif %}
+  {%- if is_online(p) %}<span class="pill on" title="L'agente è in contatto con il server">online</span>
+  {%- else %}<span class="pill off" title="Nessun contatto da più di 3 minuti">offline</span>{% endif %}
+  {%- if remote_access(p) %}<span class="pill on" title="Il cliente consente l'accesso remoto">collegato</span>
+  {%- else %}<span class="pill warn" title="Il cliente ha sospeso l'accesso remoto">accesso sospeso</span>{% endif %}
+{%- else -%}
+  {{ status_badge(p.status) }}
+{%- endif -%}
+</span>
+{%- endmacro %}
+
 {% macro num(v) %}{{ '—' if v is none else (v | int if v == v | int else v) }}{% endmacro %}
 
 {% macro diagnostics(d) -%}

@@ -14,6 +14,7 @@
       <input id="password" type="password" name="password" required autocomplete="current-password">
       <p style="margin-top:20px"><button class="btn">Accedi</button></p>
     </form>
+    {% if email_reset %}<p class="small" style="margin:12px 0 0"><a href="/recupero">Password dimenticata?</a></p>{% endif %}
   </div>
 </div>
 {% endblock %}

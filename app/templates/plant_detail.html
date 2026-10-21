@@ -1,11 +1,11 @@
 {% extends "base.html" %}
-{% from "_macros.html" import status_badge, diagnostics %}
+{% from "_macros.html" import status_badge, diagnostics, plant_state %}
 {% block title %}{{ plant.client_name }} · {{ plant.name }}{% endblock %}
 {% block content %}
 <div class="head">
   <div><p class="muted small" style="margin:0"><a href="/clienti">Clienti</a> / <a href="/clienti/{{ plant.client_id }}">{{ plant.client_name }}</a> /</p>
     <h1>{{ plant.name }}</h1>
-    <div class="row small"><span id="st">{{ status_badge(plant.status) }}</span>
+    <div class="row small"><span id="st">{{ plant_state(plant) }}</span>
       <span class="muted">Ultimo contatto: <span id="seen">{{ plant.last_seen | ago }}</span></span>
       {% if plant.paired_at and not plant.consent %}<span class="badge s-attenzione">Accesso remoto sospeso dal cliente</span>
       {% elif plant.paired_at and plant.consent_until %}<span class="badge s-in_attesa">Accesso remoto fino al {{ plant.consent_until | ts }}</span>{% endif %}</div>
@@ -24,13 +24,17 @@
 <div class="card" style="margin-bottom:16px">
   <div class="grid g2" style="align-items:center">
     <div class="pair"><p class="muted" style="margin:0">Codice di abbinamento</p><div class="code">{{ plant.pair_code }}</div>
-      <p class="muted small" style="margin:0">valido fino al {{ plant.pair_expires | ts }}</p></div>
+      <button type="button" class="btn ghost copy" data-copy="{{ plant.pair_code }}">Copia codice</button>
+      <p class="muted small" style="margin:8px 0 0">valido fino al {{ plant.pair_expires | ts }}</p></div>
     <div>
       <h2>Come collegare l'impianto</h2>
       <ol style="margin:0;padding-left:20px">
         <li>Su Home Assistant del cliente installa l'add-on <b>Agente Assistenza</b>.</li>
         <li>Nella scheda <i>Configurazione</i> inserisci:<br>
-          indirizzo server: <code>{{ public_url }}</code><br>codice: <code>{{ plant.pair_code }}</code></li>
+          indirizzo server: <code>{{ public_url }}</code>
+          <button type="button" class="link-btn copy" data-copy="{{ public_url }}">copia</button><br>
+          codice: <code>{{ plant.pair_code }}</code>
+          <button type="button" class="link-btn copy" data-copy="{{ plant.pair_code }}">copia</button></li>
         <li>Avvia l'add-on: in pochi secondi questa pagina diventa verde.</li>
       </ol>
     </div>
@@ -47,7 +51,7 @@
       <h2>Comandi recenti</h2>
       {% if commands %}
       <table id="cmds"><tr><th>Comando</th><th>Stato</th><th>Da</th><th>Quando</th></tr>
-        {% for c in commands %}<tr data-id="{{ c.id }}"><td>{{ ALLOWED_COMMANDS.get(c.name, c.name) }}</td>
+        {% for c in commands %}<tr data-id="{{ c.id }}"><td>{{ COMMAND_LABELS.get(c.name, c.name) }}</td>
           <td><span class="badge s-{{ c.status }}">{{ COMMAND_STATUS[c.status] }}</span></td>
           <td class="small muted">{{ c.username or '—' }}</td><td class="small muted">{{ c.created_at | ago }}</td></tr>{% endfor %}
       </table>
@@ -61,6 +65,55 @@
         <span class="badge s-{{ t.status }}">{{ TICKET_STATUS[t.status] }}</span> <span class="muted small">{{ t.updated_at | ago }}</span></p>
       {% else %}<p class="muted">Nessun ticket.</p>{% endfor %}
     </div>
+    {% if plant.paired_at and not plant.revoked %}
+    {% set adm = plant.admin %}
+    <div class="card" id="admin">
+      <h2>Accesso amministratore</h2>
+      {% if adm.active %}
+        <p style="margin:0 0 8px"><span class="pill on">concesso</span>
+          {% if adm.permanent %}<b>senza scadenza</b>{% else %}fino al <b>{{ adm.until | ts }}</b>{% endif %}</p>
+        {% if admin_secret %}
+        <div class="secret">
+          <p class="small muted" style="margin:0 0 6px">Credenziali per entrare in Home Assistant come amministratore:</p>
+          <dl class="kv"><dt>Utente</dt><dd><code>{{ admin_secret.username }}</code>
+              <button type="button" class="link-btn copy" data-copy="{{ admin_secret.username }}">copia</button></dd>
+            <dt>Password</dt><dd><code>{{ admin_secret.password }}</code>
+              <button type="button" class="link-btn copy" data-copy="{{ admin_secret.password }}">copia</button></dd></dl>
+          <p class="small muted" style="margin:6px 0 0">Non viene salvata: sparisce da questa pagina entro {{ ((admin_secret.expires - now_ts) / 60) | round | int }} minuti.
+            Resta valida in Home Assistant finché non ne chiedi un'altra o l'accesso scade.</p>
+        </div>
+        {% elif adm.username %}
+        <p class="small muted" style="margin:0 0 8px">Utente attivo in Home Assistant: <code>{{ adm.username }}</code>. Per entrare serve una password nuova.</p>
+        {% endif %}
+        {% if can(user, 'edit') %}
+        <div class="row" style="margin-top:10px">
+          <form class="inline" method="post" action="/impianti/{{ plant.id }}/amministratore"
+                data-confirm="Viene creata una password nuova: quella precedente e le sessioni aperte smettono di funzionare. Continuare?">
+            <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="op" value="password">
+            <button class="btn small">{{ 'Nuova password' if admin_secret or adm.username else 'Mostra password' }}</button></form>
+          <form class="inline" method="post" action="/impianti/{{ plant.id }}/amministratore" data-confirm="Chiudere l'accesso amministratore? L'utente verrà cancellato.">
+            <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="op" value="chiudi">
+            <button class="btn danger small">Chiudi accesso</button></form>
+        </div>
+        <p class="small muted" style="margin:8px 0 0">Il cliente riceve una notifica ogni volta che entri e può chiudere l'accesso quando vuole.</p>
+        {% endif %}
+      {% elif plant.admin_requested_at %}
+        <p style="margin:0 0 8px">Richiesta inviata {{ plant.admin_requested_at | ago }}{% if plant.admin_requested_by %} da {{ plant.admin_requested_by }}{% endif %}: in attesa che il cliente la accetti dal suo pannello.</p>
+        {% if can(user, 'edit') %}
+        <form method="post" action="/impianti/{{ plant.id }}/amministratore"><input type="hidden" name="csrf" value="{{ csrf }}">
+          <input type="hidden" name="op" value="annulla"><button class="btn ghost small">Annulla richiesta</button></form>
+        {% endif %}
+      {% else %}
+        <p class="small muted" style="margin:0 0 8px">Per modificare l'impianto serve un utente amministratore in Home Assistant.
+          Lo crea l'agente solo dopo il consenso del cliente, per il tempo che sceglie lui.
+          {% if adm.declined %}<br>L'ultima richiesta è stata rifiutata dal cliente.{% endif %}</p>
+        {% if can(user, 'edit') %}
+        <form method="post" action="/impianti/{{ plant.id }}/amministratore"><input type="hidden" name="csrf" value="{{ csrf }}">
+          <input type="hidden" name="op" value="richiedi"><button class="btn ghost small">Chiedi accesso amministratore</button></form>
+        {% endif %}
+      {% endif %}
+    </div>
+    {% endif %}
     <div class="card">
       <h2>Informazioni</h2>
       <dl class="kv"><dt>Home Assistant</dt><dd>{{ plant.ha_version or '—' }}</dd><dt>Agente</dt><dd>{{ plant.agent_version or '—' }}
@@ -100,11 +153,30 @@
         {% endif %}
       </div>
       {% endif %}
+      {% if can(user, 'edit') %}
+      <details class="manage">
+        <summary>Modifica o elimina l'impianto</summary>
+        <form method="post" action="/impianti/{{ plant.id }}/nome" class="row">
+          <input type="hidden" name="csrf" value="{{ csrf }}">
+          <input class="grow" name="name" value="{{ plant.name }}" maxlength="80" required aria-label="Nome impianto">
+          <button class="btn ghost small">Rinomina</button>
+        </form>
+        {% if can(user, 'settings') %}
+        <form method="post" action="/impianti/{{ plant.id }}/elimina" class="danger-zone">
+          <input type="hidden" name="csrf" value="{{ csrf }}">
+          <p class="small">Elimina l'impianto con tutti i suoi ticket e comandi. L'agente del cliente verrà scollegato.
+            Non si può annullare: per confermare scrivi <b>{{ plant.name }}</b>.</p>
+          <div class="row"><input class="grow" name="confirm_name" autocomplete="off" required aria-label="Nome dell'impianto da eliminare">
+            <button class="btn danger small">Elimina impianto</button></div>
+        </form>
+        {% endif %}
+      </details>
+      {% endif %}
     </div>
   </div>
 </div>
 {% endblock %}
 {% block scripts %}
 <div id="plant-live" hidden data-url="/impianti/{{ plant.id }}/stato.json"
-     data-state="{{ {'status': plant.status, 'diag': plant.last_diag_at, 'cmds': commands | map(attribute='status') | list} | tojson | forceescape }}"></div>
+     data-state="{{ {'status': plant.status, 'diag': plant.last_diag_at, 'cmds': commands | map(attribute='status') | list, 'admin': admin_key(plant)} | tojson | forceescape }}"></div>
 {% endblock %}

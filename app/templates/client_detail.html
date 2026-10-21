@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_macros.html" import status_badge %}
+{% from "_macros.html" import status_badge, plant_state %}
 {% block title %}{{ client.name }}{% endblock %}
 {% block content %}
 <div class="head"><div><p class="muted small" style="margin:0"><a href="/clienti">Clienti</a> /</p><h1>{{ client.name }}</h1></div>
@@ -10,11 +10,14 @@
     {% if plants %}
     <table>
       <tr><th>Stato</th><th>Impianto</th><th>Versione HA</th><th>Ultimo contatto</th></tr>
-      {% for p in plants %}<tr><td>{{ status_badge(p.status) }}</td><td><a href="/impianti/{{ p.id }}"><b>{{ p.name }}</b></a></td>
+      {% for p in plants %}<tr><td>{{ plant_state(p) }}</td><td><a href="/impianti/{{ p.id }}"><b>{{ p.name }}</b></a></td>
         <td class="small">{{ p.ha_version or '—' }}</td><td class="small muted">{{ p.last_seen | ago }}</td></tr>{% endfor %}
     </table>
     {% else %}<p class="muted">Nessun impianto collegato.</p>{% endif %}
-    {% if can(user, 'edit') %}
+    {% if can(user, 'edit') and usage.plants_full %}
+    <p class="warnbox small" style="margin-top:16px">Limite di {{ usage.max_plants }} impianti raggiunto per la tua azienda:
+      per aggiungerne uno elimina un impianto o chiedi al gestore del server di alzare il limite.</p>
+    {% elif can(user, 'edit') %}
     <form method="post" action="/clienti/{{ client.id }}/impianti" class="row" style="margin-top:16px">
       <input type="hidden" name="csrf" value="{{ csrf }}">
       <input class="grow" name="name" placeholder="Nome impianto (es. Casa, Ufficio, Seconda casa)">

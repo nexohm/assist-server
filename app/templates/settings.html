@@ -6,12 +6,14 @@
 <div class="card">
   <form method="post"><input type="hidden" name="csrf" value="{{ csrf }}">
     <label for="company_name">Nome dell'azienda</label><input id="company_name" name="company_name" value="{{ company }}" required>
-    <p class="muted small">Compare in questa dashboard e nel pannello Assistenza dei clienti (si aggiorna entro un minuto).</p>
+    <p class="muted small">Compare in questa dashboard e nel pannello Assistenza dei tuoi clienti, nelle notifiche che ricevono (si aggiorna entro un minuto).</p>
     <label for="brand_color">Colore del marchio</label><input id="brand_color" type="color" name="brand_color" value="{{ brand_color }}">
+    {% if can(user, 'server') %}
     <label for="public_url">Indirizzo pubblico del server</label>
     <input id="public_url" name="public_url" value="{{ saved_url }}" placeholder="{{ guessed_url }}">
     <p class="muted small">È l'indirizzo che i clienti inseriscono nell'add-on, mostrato nella pagina di abbinamento.
-      Lascialo vuoto per rilevarlo in automatico (ora: <code>{{ guessed_url }}</code>).</p>
+      Vale per tutte le aziende del server. Lascialo vuoto per rilevarlo in automatico (ora: <code>{{ guessed_url }}</code>).</p>
+    {% endif %}
     <p style="margin-top:18px"><button class="btn">Salva</button></p>
   </form>
 </div>
@@ -45,5 +47,62 @@
     </div>
   </form>
 </div>
+
+{% if mail %}
+<div class="card" id="email">
+  <h2>Recupero della password via email</h2>
+  <p class="muted small" style="margin-top:0">Vale per tutte le aziende del server. Se è attivo, nella pagina di accesso compare
+    «Password dimenticata?» e chi ha un'email nel proprio account riceve un link valido 30 minuti. Senza email resta sempre il
+    link di recupero creato dall'amministratore (o da te per gli amministratori delle aziende).</p>
+  <form method="post" action="/impostazioni/email"><input type="hidden" name="csrf" value="{{ csrf }}">
+    <button name="azione" value="salva" tabindex="-1" aria-hidden="true" style="position:absolute;left:-9999px"></button>
+    <label class="check"><input type="checkbox" name="email_reset" value="1" {{ 'checked' if mail.enabled }}> Attiva «Password dimenticata?» via email</label>
+    <label for="smtp_host">Server SMTP</label><input id="smtp_host" name="smtp_host" value="{{ mail.smtp_host }}" placeholder="es. smtp.tuoservizio.it">
+    <div class="row">
+      <div><label for="smtp_security">Sicurezza</label><select id="smtp_security" name="smtp_security">
+        {% for k, label in mail.security_options.items() %}<option value="{{ k }}" {{ 'selected' if (mail.smtp_security or 'starttls') == k }}>{{ label }}</option>{% endfor %}</select></div>
+      <div><label for="smtp_port">Porta</label><input id="smtp_port" name="smtp_port" inputmode="numeric" value="{{ mail.smtp_port }}" placeholder="automatica" style="width:120px"></div>
+    </div>
+    <label for="smtp_user">Utente SMTP</label><input id="smtp_user" name="smtp_user" value="{{ mail.smtp_user }}" autocomplete="off">
+    <label for="smtp_password">Password SMTP</label>
+    <input id="smtp_password" name="smtp_password" type="password" autocomplete="new-password"
+           placeholder="{{ 'impostata — lascia vuoto per non cambiarla' if mail.password_set else 'password o chiave SMTP del servizio' }}">
+    <label for="smtp_from">Mittente (email)</label><input id="smtp_from" name="smtp_from" value="{{ mail.smtp_from }}" placeholder="es. noreply@tuodominio.it">
+    <label for="email_sender_name">Nome del mittente</label><input id="email_sender_name" name="email_sender_name" value="{{ mail.sender_name }}" placeholder="Assistenza impianti">
+    {% set st = mail.status %}
+    {% if st.configured %}
+    <dl class="kv" style="margin-top:16px">
+      <dt>Ultimo controllo</dt><dd>{{ st.check_at | ago }}{% if st.error %} — <span class="tag-update">{{ st.error }}</span>{% elif st.check_at %} — <span class="muted small">funziona</span>{% endif %}</dd>
+      <dt>Ultimo invio riuscito</dt><dd>{{ st.sent_at | ago }}</dd>
+      <dt>Email di controllo</dt><dd>{% if st.manager_email %}ogni {{ st.keepalive_days }} giorni a {{ st.manager_email }}{% if st.keepalive_due %}, la prossima entro il {{ st.keepalive_due | ts }}{% endif %}{% else %}<span class="tag-update">aggiungi la tua email in «Il mio account»</span>{% endif %}</dd>
+    </dl>
+    {% endif %}
+    <p class="muted small">Il server controlla ogni giorno che l'accesso funzioni e ogni {{ mail.status.keepalive_days }} giorni ti manda
+      un'email di controllo: così la chiave del servizio non resta mai inutilizzata (Brevo, per esempio, la disattiva dopo 90 giorni
+      senza invii) e, se qualcosa smette di funzionare, te ne accorgi subito da un avviso qui in dashboard e su Telegram.</p>
+    <div class="row" style="margin-top:16px">
+      <button class="btn" name="azione" value="salva">Salva</button>
+      <button class="btn ghost" name="azione" value="prova">Invia prova{% if user.email %} a {{ user.email }}{% endif %}</button>
+      {% if mail.status.configured %}<button class="btn ghost" name="azione" value="controlla">Controlla adesso</button>{% endif %}
+      {% if mail.enabled %}<button class="btn danger" name="azione" value="disattiva">Disattiva</button>{% endif %}
+    </div>
+  </form>
+</div>
+{% endif %}
+
+{% if upd %}
+<div class="card" id="aggiornamenti">
+  <h2>Aggiornamenti</h2>
+  <dl class="kv">
+    <dt>Server in uso</dt><dd><code>{{ upd.current }}</code>{% if not upd.release %} <span class="badge s-in_attesa">versione di prova</span>{% endif %}</dd>
+    <dt>Server pubblicato</dt><dd>{% if upd.latest_server %}<code>{{ upd.latest_server }}</code>{% if upd.server_update %} <span class="tag-update">da installare</span>{% elif upd.release %} <span class="muted small">sei aggiornato</span>{% endif %}{% else %}<span class="muted">non ancora letto</span>{% endif %}</dd>
+    <dt>Agente pubblicato</dt><dd>{% if upd.latest_agent %}<code>{{ upd.latest_agent }}</code>{% if upd.outdated_agents %} <span class="tag-update">{{ upd.outdated_agents }} {{ 'impianto da aggiornare' if upd.outdated_agents == 1 else 'impianti da aggiornare' }}</span>{% endif %}{% else %}<span class="muted">non ancora letto</span>{% endif %}</dd>
+    <dt>Ultimo controllo</dt><dd>{% if not upd.enabled %}disattivato (<code>UPDATE_CHECK=0</code>){% else %}{{ upd.checked_at | ago }}{% if upd.error %} <span class="muted small">— ultimo tentativo {{ upd.attempt_at | ago }} non riuscito: {{ upd.error }}</span>{% endif %}{% endif %}</dd>
+  </dl>
+  {% if not upd.release %}<p class="muted small">Con una versione di prova l'avviso in cima alle pagine non compare: per tornare alle versioni pubblicate imposta <code>SUITE_TAG=latest</code> e aggiorna.</p>{% endif %}
+  <p class="muted small">Il controllo avviene da solo ogni ora. Per aggiornare il server: <code>sudo ha-suite aggiorna</code>. L'agente si aggiorna da Home Assistant del cliente (Impostazioni → Add-on).</p>
+  {% if upd.enabled %}<form method="post" action="/impostazioni/aggiornamenti"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="btn ghost">Controlla adesso</button></form>{% endif %}
+</div>
+{% endif %}
 </div>
 {% endblock %}

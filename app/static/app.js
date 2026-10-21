@@ -28,7 +28,7 @@ document.addEventListener("click", function (e) {
         const seen = document.getElementById("seen");
         if (seen) seen.textContent = s.last_seen;
         const cmds = s.commands.map(c => c.status);
-        if (s.status !== first.status || s.last_diag_at !== first.diag || JSON.stringify(cmds) !== JSON.stringify(first.cmds)) {
+        if (s.status !== first.status || s.last_diag_at !== first.diag || JSON.stringify(cmds) !== JSON.stringify(first.cmds) || s.admin !== first.admin) {
           location.reload(); return;
         }
       }
@@ -57,4 +57,28 @@ document.addEventListener("submit", function (e) {
 window.addEventListener("pageshow", function () {
   document.querySelectorAll(".btn.busy").forEach(function (b) { b.classList.remove("busy"); });
   document.querySelectorAll("form[data-sending]").forEach(function (f) { delete f.dataset.sending; });
+});
+
+// Pulsanti "Copia": <button data-copy="testo">. Funziona anche senza https (dove il browser
+// non permette navigator.clipboard) con il vecchio metodo della selezione.
+document.addEventListener("click", async function (e) {
+  const btn = e.target.closest && e.target.closest("button[data-copy]");
+  if (!btn) return;
+  const text = btn.getAttribute("data-copy");
+  let ok = false;
+  try {
+    if (navigator.clipboard && window.isSecureContext) { await navigator.clipboard.writeText(text); ok = true; }
+  } catch (err) {}
+  if (!ok) {
+    const ta = document.createElement("textarea");
+    ta.value = text; ta.setAttribute("readonly", ""); ta.style.position = "fixed"; ta.style.opacity = "0";
+    document.body.appendChild(ta); ta.select();
+    try { ok = document.execCommand("copy"); } catch (err) {}
+    ta.remove();
+  }
+  if (!btn.dataset.label) btn.dataset.label = btn.textContent;
+  btn.textContent = ok ? "Copiato ✓" : "Copia non riuscita";
+  btn.classList.toggle("copied", ok);
+  clearTimeout(btn._t);
+  btn._t = setTimeout(function () { btn.textContent = btn.dataset.label; btn.classList.remove("copied"); }, 1800);
 });

@@ -13,7 +13,7 @@ from starlette.middleware.sessions import SessionMiddleware
 from starlette.routing import Mount
 from starlette.staticfiles import StaticFiles
 
-from . import agent_api, db, notify, web
+from . import accounts, agent_api, db, notify, web
 from .middleware import BodyLimit, SecurityHeaders
 
 VERSION = os.environ.get("SUITE_VERSION", "dev")
@@ -39,11 +39,13 @@ web.ensure_setup_code()
 
 @asynccontextmanager
 async def lifespan(app):
-    task = asyncio.create_task(notify.watcher())  # controllo impianti offline/critici per le notifiche
+    tasks = [asyncio.create_task(notify.watcher()),     # impianti offline/critici per le notifiche
+             asyncio.create_task(accounts.watcher())]   # posta: accesso ogni giorno, email di controllo mensile
     try:
         yield
     finally:
-        task.cancel()
+        for task in tasks:
+            task.cancel()
 
 
 app = Starlette(

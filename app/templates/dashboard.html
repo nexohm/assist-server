@@ -1,38 +1,39 @@
 {% extends "base.html" %}
-{% from "_macros.html" import status_badge %}
+{% from "_macros.html" import status_badge, plant_state %}
 {% block title %}Panoramica{% endblock %}
 {% block content %}
 <div class="head"><div><h1>Panoramica</h1><p class="muted" style="margin:0">Stato di tutti gli impianti in assistenza</p></div>
-  {% if can(user, 'edit') %}<a class="btn" href="/clienti/nuovo">+ Nuovo cliente</a>{% endif %}</div>
+  {% if can(user, 'edit') %}{% if usage.clients_full %}<span class="muted small" title="Chiedi al gestore del server di alzare il limite">Limite di {{ usage.max_clients }} clienti raggiunto</span>{% else %}<a class="btn" href="/clienti/nuovo">+ Nuovo cliente</a>{% endif %}{% endif %}</div>
 <div class="stats">
-  <div class="stat"><b>{{ plants | length }}</b><span>Impianti</span></div>
-  <div class="stat {{ 'bad' if counts.offline }}"><b>{{ counts.offline }}</b><span>Offline</span></div>
-  <div class="stat {{ 'bad' if counts.critico }}"><b>{{ counts.critico }}</b><span>Critici</span></div>
-  <div class="stat {{ 'warn' if counts.attenzione }}"><b>{{ counts.attenzione }}</b><span>Da controllare</span></div>
-  <div class="stat {{ 'warn' if open_tickets }}"><b>{{ open_tickets | length }}</b><span>Ticket aperti</span></div>
+  <a class="stat" href="/"><b>{{ total }}</b><span>Impianti{% if usage.max_plants %} di {{ usage.max_plants }}{% endif %}</span></a>
+  <a class="stat {{ 'bad' if counts.offline }} {{ 'active' if filtro == 'offline' }}" href="/?stato=offline"><b>{{ counts.offline }}</b><span>Offline</span></a>
+  <a class="stat {{ 'bad' if counts.critico }} {{ 'active' if filtro == 'critico' }}" href="/?stato=critico"><b>{{ counts.critico }}</b><span>Critici</span></a>
+  <a class="stat {{ 'warn' if counts.attenzione }} {{ 'active' if filtro == 'attenzione' }}" href="/?stato=attenzione"><b>{{ counts.attenzione }}</b><span>Da controllare</span></a>
+  <a class="stat {{ 'warn' if n_open }}" href="/ticket?stato=aperti"><b>{{ n_open }}</b><span>Ticket aperti</span></a>
 </div>
 <div class="grid g-side">
   <div class="card">
-    <h2>Impianti</h2>
+    <h2>Impianti{% if filtro %} · {{ {'offline':'offline','critico':'critici','attenzione':'da controllare'}[filtro] }}
+      <a class="small" href="/" style="font-weight:400">mostra tutti</a>{% endif %}</h2>
     {% if plants %}
     <div class="table-wrap"><table>
       <tr><th>Stato</th><th>Cliente / impianto</th><th>Problemi</th><th>Ultimo contatto</th></tr>
       {% for p in plants %}
       <tr>
-        <td>{{ status_badge(p.status) }}</td>
+        <td>{{ plant_state(p) }}</td>
         <td><a href="/impianti/{{ p.id }}"><b>{{ p.client_name }}</b></a><br><span class="muted small">{{ p.name }}</span>
-          {% if p.paired_at and not p.consent %}<br><span class="tag-update">accesso sospeso</span>
-          {% elif p.paired_at and p.consent_until %}<br><span class="muted small">accesso fino al {{ p.consent_until | ts }}</span>{% endif %}
+          {% if p.paired_at and remote_access(p) and p.consent_until %}<br><span class="muted small">accesso fino al {{ p.consent_until | ts }}</span>{% endif %}
           {% if p.agent_version and agent_outdated(p.agent_version) %}<br><span class="tag-update">agente da aggiornare</span>{% endif %}</td>
         <td class="small">{% if p.diag.summary %}{{ p.diag.summary.unavailable }} non disp. · {{ p.diag.summary.low_battery }} batterie{% else %}<span class="muted">—</span>{% endif %}</td>
         <td class="small muted">{{ p.last_seen | ago }}</td>
       </tr>
       {% endfor %}
     </table></div>
+    {% elif filtro %}<div class="empty">Nessun impianto in questo stato. <a href="/">Mostra tutti</a></div>
     {% else %}<div class="empty">Nessun impianto. Crea un cliente e aggiungi il suo impianto per iniziare.</div>{% endif %}
   </div>
   <div class="card">
-    <h2>Ticket aperti</h2>
+    <h2>Ticket aperti {% if n_open > open_tickets|length %}<a class="small" href="/ticket?stato=aperti" style="font-weight:400">vedi tutti ({{ n_open }})</a>{% endif %}</h2>
     {% for t in open_tickets %}
       <p style="margin:0 0 12px"><a href="/ticket/{{ t.id }}"><b>{{ t.title }}</b></a><br>
       <span class="muted small">{{ t.client_name }} · {{ t.updated_at | ago }}</span> <span class="badge s-{{ t.status }}">{{ TICKET_STATUS[t.status] }}</span></p>

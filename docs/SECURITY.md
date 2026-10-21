@@ -62,6 +62,58 @@ proprio token, token salvati solo come hash, query SQL sempre parametrizzate, es
 nei template della dashboard, reindirizzamento dopo il login limitato a percorsi interni, sessione
 non più valida dopo la disattivazione dell'utente.
 
+## Accesso amministratore temporaneo (dal server 0.2.7 e dall'agente 0.1.8)
+
+È la funzione più delicata: un amministratore di Home Assistant può modificare tutto. Le difese:
+
+- il permesso lo dà **solo il cliente** dal pannello, con la durata che sceglie; il server può solo chiederlo,
+  e un comando `admin_password` senza permesso viene rifiutato dall'agente;
+- l'utente HA viene **ricreato a ogni richiesta di password**: password nuova e sessioni precedenti chiuse;
+- la password non viene mai salvata: né dall'agente, né nel database del server (solo in memoria, 15 minuti),
+  e non è visibile al ruolo lettura;
+- la **scadenza la controlla l'agente**, anche se il server è spento o compromesso; l'utente viene cancellato
+  anche quando l'impianto viene scollegato e quando l'add-on viene arrestato o disinstallato;
+- senza scadenza: utente cancellato dopo 30 giorni senza richieste di password e promemoria al cliente ogni 30 giorni;
+- il cliente riceve una notifica a ogni ingresso dell'installatore.
+
+Rischio che resta: chi controlla il server dell'installatore **mentre** un accesso è concesso può chiedere
+una password e ottenere un amministratore su quell'impianto (il cliente ne riceve notifica). Per questo il
+server va protetto come indicato sotto, e conviene concedere durate brevi.
+
+## Più aziende sullo stesso server (dal server 0.2.7)
+
+- Ogni utente e ogni cliente appartiene a un'azienda; impianti, ticket e comandi la seguono attraverso il cliente.
+- Il controllo è in un punto solo: ogni id nell'indirizzo di una pagina (cliente, impianto, ticket, utente, comando)
+  viene verificato contro l'azienda di chi è collegato prima di eseguire la pagina. Un id di un'altra azienda
+  risponde «non trovato», come un id inesistente. Un indirizzo nuovo con un parametro non previsto fa errore
+  invece di passare senza controllo.
+- Gli elenchi (panoramica, clienti, ticket, utenti, tecnici da assegnare) filtrano per azienda.
+- Il gestore del server vede delle altre aziende solo nome e numeri (clienti, impianti). Indirizzo pubblico e
+  aggiornamenti sono suoi; un altro amministratore della sua azienda non può reimpostargli la password né disattivarlo.
+- I nomi utente sono unici su tutto il server (un solo login per tutte le aziende).
+- Bot Telegram e scelte delle notifiche sono per azienda.
+- Sospensione (solo il gestore, non la propria azienda): gli utenti vengono esclusi anche dalle sessioni già aperte;
+  l'API degli agenti risponde 423 senza revocare l'abbinamento, così l'agente va in pausa, chiude l'eventuale accesso
+  amministratore e riparte da solo alla riattivazione. Niente nuovi abbinamenti né avvisi Telegram nel frattempo.
+- Eliminazione (solo il gestore, non la propria azienda): nome dell'azienda e password del gestore; prima una copia
+  di sicurezza del database in `/data/backups`. Gli agenti dei suoi impianti ricevono 401 e risultano revocati.
+- Limiti di clienti e impianti: controllo e inserimento nella stessa istruzione SQL, quindi richieste contemporanee
+  non li superano; il gestore non può impostarli sotto i valori attuali.
+- Test: `tests/run_security.sh`, sezioni «più aziende», «recupero della password», «limiti», «sospensione», «eliminazione».
+
+## Password e recupero (dal server 0.2.7)
+
+- Link di recupero monouso: 30 minuti, una volta sola, nel database solo l'hash (SHA-256). Usato un link, gli altri
+  dello stesso utente non valgono più. Non vale per utenti disattivati o di aziende sospese.
+- Li crea l'amministratore per i suoi utenti, il gestore per gli amministratori delle aziende (non per i tecnici di
+  altre aziende), oppure il server (`sudo ha-suite password <utente>`): è l'unico modo per il gestore stesso, così un
+  altro amministratore non può prenderne il posto. Nota: chi crea un link potrebbe usarlo lui; l'utente se ne accorge
+  perché la sua password smette di funzionare, e ogni link creato finisce nel log.
+- Email (facoltativa, la attiva il gestore): la risposta di «Password dimenticata?» è identica per utenti esistenti e
+  non, al massimo 5 richieste ogni 15 minuti per IP e 3 email per utente. La password SMTP resta nel database del server.
+- Password iniziali scelte da altri (nuovo utente, nuova azienda): cambio obbligatorio al primo accesso.
+- La sessione contiene un'impronta della password: cambiandola (anche con un link) le altre sessioni si chiudono.
+
 ## Da sapere / non coperto
 
 - **Sessioni**: il cookie è firmato, non salvato sul server. Il logout cancella il cookie dal browser,

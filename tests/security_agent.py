@@ -171,6 +171,142 @@ weird = ["javascript:alert(1)", "sensor.x\"><b>", "*", "a" * 70 + ".b", "../etc.
 check(not any(ENTITY_PATTERN.fullmatch(w) for w in weird) and ENTITY_PATTERN.fullmatch("vacuum.robot_*"),
       "pannello: i nomi di entità da escludere sono validati")
 
+# ---------------------------------------------------------------- 0.1.8: schede ed etichette
+before = list(agent.state.get("only_labels") or [])
+req = urllib.request.Request(f"http://127.0.0.1:{pport}/etichette", data=b"label=importante",
+                             method="POST", headers={"Content-Type": "application/x-www-form-urlencoded"})
+try:
+    urllib.request.urlopen(req, timeout=5)
+except Exception:  # noqa: BLE001
+    pass
+check(agent.state.get("only_labels") == before, "pannello: un altro sito non può cambiare il filtro per etichette (CSRF)")
+
+page = urllib.request.urlopen(f"http://127.0.0.1:{pport}/?s=%3Cscript%3Ealert(1)%3C/script%3E", timeout=5).read().decode()
+check("<script" not in page, "pannello: il parametro della scheda non finisce nella pagina")
+
+# Filtro per etichette attivo ma registro di HA illeggibile: niente controllo piuttosto che
+# mandare all'installatore entità che il cliente ha escluso.
+from agent import ha as ha_mod  # noqa: E402
+agent.state.update(only_labels=["importante"], last_diag=None)
+orig = ha_mod.entity_labels
+def _broken():
+    raise ha_mod.HAError("registro non disponibile")
+ha_mod.entity_labels = _broken
+try:
+    agent.fresh_diagnostics()
+    leaked = True
+except ha_mod.HAError:
+    leaked = False
+except Exception:  # noqa: BLE001
+    leaked = agent.state.get("last_diag") is not None
+finally:
+    ha_mod.entity_labels = orig
+    agent.state.update(only_labels=[])
+check(not leaked and agent.state.get("last_diag") is None,
+      "etichette: se il filtro non si può applicare la diagnostica non parte (nessuna entità esclusa inviata)")
+
+# ---------------------------------------------------------------- accesso amministratore temporaneo
+import time as _time  # noqa: E402
+from agent import admin as admin_mod  # noqa: E402
+
+fake_users, ws_log, fail = {}, [], {"delete": False}
+def fake_ws(command, timeout=10, **params):
+    ws_log.append((command, params))
+    if command == "config/auth/create":
+        uid = f"u{len(ws_log)}"
+        fake_users[uid] = {"group_ids": params.get("group_ids"), "username": None}
+        return {"user": {"id": uid}}
+    if command == "config/auth_provider/homeassistant/create":
+        fake_users[params["user_id"]]["username"] = params["username"]
+        return {}
+    if command == "config/auth/delete":
+        if fail["delete"]:
+            raise ha_mod.HAError("Home Assistant non risponde")
+        fake_users.pop(params["user_id"], None)
+        return {}
+    raise ha_mod.HAError("comando sconosciuto")
+orig_ws = ha_mod.ws_command
+ha_mod.ws_command = fake_ws
+notified = []
+agent.notify_client = lambda title, message, tag: notified.append(title) or 1
+adm = agent.admin
+try:
+    ok, _, err = agent.execute({"name": "admin_password"})
+    check(not ok and not fake_users, "amministratore: il server da solo non può far creare un utente (serve il consenso del cliente)", err)
+
+    adm.grant("1h")
+    creds = adm.reveal()
+    state_text = open(os.path.join(TMP, "state.json")).read()
+    check(len(fake_users) == 1 and list(fake_users.values())[0]["group_ids"] == ["system-admin"]
+          and creds["password"] not in state_text and len(creds["password"]) >= 20,
+          "amministratore: utente creato con password lunga, mai salvata dall'agente")
+    first = adm.get()["user_id"]
+    adm.reveal()
+    check(first not in fake_users and len(fake_users) == 1,
+          "amministratore: ogni nuova password ricrea l'utente (password e sessioni vecchie non valgono più)")
+
+    # scadenza controllata dall'agente, anche se il server non risponde
+    srv.shutdown()
+    a = adm.get(); a["until"] = _time.time() - 1; agent.state.update(admin=a)
+    adm.tick()
+    check(not fake_users and not adm.active(), "amministratore: alla scadenza l'utente viene cancellato anche senza server")
+
+    # HA non risponde alla chiusura: il permesso si toglie subito, la cancellazione viene ritentata
+    adm.grant("4h"); adm.reveal(); fail["delete"] = True
+    adm.close("cliente")
+    stuck = bool(fake_users) and not adm.active()
+    fail["delete"] = False; adm.tick()
+    check(stuck and not fake_users, "amministratore: se HA non risponde, l'utente viene cancellato al tentativo successivo")
+
+    # senza scadenza: utente cancellato dopo 30 giorni senza uso, il permesso resta; promemoria ogni 30 giorni
+    adm.grant("sempre"); adm.reveal()
+    a = adm.get(); a["last_reveal"] = _time.time() - 31 * 86400; a["last_reminder"] = _time.time() - 31 * 86400
+    agent.state.update(admin=a); notified.clear()
+    adm.tick()
+    check(not fake_users and adm.active() and any("ancora attivo" in n for n in notified),
+          "senza scadenza: utente cancellato dopo 30 giorni senza uso e promemoria al cliente, il permesso resta")
+
+    # impianto scollegato dall'installatore: l'accesso si chiude
+    agent.state.update(connection="revocato", token=None)
+    adm.reveal() if adm.active() else None
+    adm.tick()
+    check(not adm.active() and not fake_users, "amministratore: se l'impianto viene scollegato l'accesso si chiude")
+    check(admin_mod.DURATIONS.get("sempre", 0) is None and "status" in dir(adm) and "password" not in json.dumps(adm.status()),
+          "amministratore: lo stato inviato al server non contiene mai la password")
+
+    # azienda dell'installatore sospesa (423): abbinamento conservato, accesso amministratore chiuso, pannello senza cicli
+    agent.state.update(connection="collegato", token="t")
+    adm.grant("4h"); adm.reveal()
+    from agent.link import ServerError as _SE  # noqa: E402
+    agent._handle_server_error(_SE(423, "assistenza sospesa"))
+    adm.tick()
+    orig_tickets = agent.link.tickets
+    calls = []
+    def suspended_tickets():
+        calls.append(1)
+        raise _SE(423, "assistenza sospesa")
+    agent.link.tickets = suspended_tickets
+    html_s = panel.page()
+    agent.link.tickets = orig_tickets
+    check(agent.state.get("token") == "t" and agent.state.get("connection") == "sospeso" and not adm.active()
+          and not fake_users and "Assistenza sospesa" in html_s and len(calls) <= 2,
+          "sospensione: l'agente resta abbinato, chiude l'accesso amministratore e il pannello non va in ciclo",
+          f"{agent.state.get('connection')} {adm.active()} {len(calls)}")
+
+    # nome del tecnico deciso dal server: niente HTML nel pannello, niente link o righe in più nelle notifiche
+    agent.state.update(connection="collegato", token="t")
+    evil_by = EVIL + " [clicca](https://evil.example)\n\nRiga finta"
+    messages = []
+    agent.notify_client = lambda title, message, tag: messages.append(message) or 1
+    adm.on_server_request("2099-01-01T00:00:00+00:00", evil_by)
+    stored = adm.get()["request_by"] or ""
+    page_html = panel._admin_html()
+    check("\n" not in stored and len(stored) <= 60 and "<img" not in page_html
+          and messages and "](" not in messages[-1].replace("\\]\\(", "") and "<img" not in messages[-1],
+          "amministratore: il nome del tecnico inviato dal server non diventa HTML né link", messages[-1] if messages else stored)
+finally:
+    ha_mod.ws_command = orig_ws
+
 bad = [r for r in results if not r[0]]
 print(f"\n{len(results) - len(bad)} difesi, {len(bad)} vulnerabili su {len(results)} controlli")
 sys.exit(1 if bad else 0)

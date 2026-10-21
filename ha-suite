@@ -62,6 +62,11 @@ case "${1:-aiuto}" in
       echo "Nessun codice: la configurazione iniziale è già stata fatta."
     fi
     ;;
+  password)
+    # Link monouso per scegliere una password nuova (es. il gestore l'ha dimenticata)
+    if [[ -z "${2:-}" ]]; then echo "Uso: sudo ha-suite password <nome utente>"; exit 1; fi
+    dc exec -T suite python -m app.cli link "$2"
+    ;;
   versione)
     dc exec -T suite printenv SUITE_VERSION || echo "server non in esecuzione"
     ;;
@@ -115,6 +120,7 @@ Uso: ./ha-suite <comando>
   backup       salva tutti i dati in ./backup (tiene gli ultimi 14)
   ripristina   ripristina un backup:  ./ha-suite ripristina backup/<file>.tar.gz
   codice       mostra il codice di installazione (solo prima della configurazione iniziale)
+  password U   link per scegliere una password nuova per l'utente U (vale 30 minuti)
   riavvia      applica modifiche al file .env
   disinstalla  rimuove i container (i dati restano)
 HELP

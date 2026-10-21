@@ -2,19 +2,28 @@
 {% block title %}Utenti{% endblock %}
 {% block content %}
 <div class="head"><h1>Utenti</h1></div>
+{% if reset %}
+<div class="card secret" style="margin-bottom:16px">
+  <h2>Link di recupero per {{ reset.username }}</h2>
+  <p class="small" style="margin-top:0">Mandalo a {{ reset.username }} (messaggio, email…): aprendolo sceglierà una password nuova.
+    Vale <b>{{ reset_minutes }} minuti</b> e una volta sola; non viene mostrato di nuovo.</p>
+  <div class="row"><code class="grow" style="word-break:break-all">{{ reset.url }}</code>
+    <button type="button" class="btn ghost small copy" data-copy="{{ reset.url }}">Copia link</button></div>
+</div>
+{% endif %}
 <div class="grid g-side">
   <div class="card table-wrap"><table>
     <tr><th>Utente</th><th>Ruolo</th><th>Stato</th><th></th></tr>
-    {% for u in users %}<tr><td><b>{{ u.full_name or u.username }}</b><br><span class="muted small">{{ u.username }}</span></td>
-      <td>{{ ROLE_LABELS[u.role] }}</td><td>{% if u.active %}<span class="badge s-ok">Attivo</span>{% else %}<span class="badge s-offline">Disattivato</span>{% endif %}</td>
-      <td>{% if u.id != user.id %}
+    {% for u in users %}<tr><td><b>{{ u.full_name or u.username }}</b><br><span class="muted small">{{ u.username }}{% if u.email %} · {{ u.email }}{% endif %}</span>
+      {% if u.must_change %}<br><span class="tag-update">password da cambiare al primo accesso</span>{% endif %}</td>
+      <td>{{ ROLE_LABELS[u.role] }}{% if u.is_manager %}<br><span class="muted small">gestore del server</span>{% endif %}</td><td>{% if u.active %}<span class="badge s-ok">Attivo</span>{% else %}<span class="badge s-offline">Disattivato</span>{% endif %}</td>
+      <td>{% if u.is_manager and u.id != user.id %}<span class="muted small">Solo il gestore può modificare il proprio account.</span>
+        {% elif u.id != user.id %}
         <div class="row">
         <form class="inline" method="post" action="/utenti/{{ u.id }}/attiva"><input type="hidden" name="csrf" value="{{ csrf }}">
           <button class="btn ghost small">{{ 'Disattiva' if u.active else 'Riattiva' }}</button></form>
-        <details><summary class="small">Reimposta password</summary>
-          <form method="post" action="/utenti/{{ u.id }}/password" class="row" style="margin-top:6px"><input type="hidden" name="csrf" value="{{ csrf }}">
-            <input type="password" name="password" placeholder="Nuova password" minlength="10" required autocomplete="new-password" style="width:180px">
-            <button class="btn small">Salva</button></form></details>
+        {% if u.active %}<form class="inline" method="post" action="/utenti/{{ u.id }}/recupero"><input type="hidden" name="csrf" value="{{ csrf }}">
+          <button class="btn ghost small" title="Crea un link con cui l'utente sceglie una password nuova">Link di recupero password</button></form>{% endif %}
         </div>
         {% else %}<a class="small" href="/account">Cambia la tua password</a>{% endif %}</td></tr>{% endfor %}
   </table></div>
@@ -24,7 +33,10 @@
     <form method="post"><input type="hidden" name="csrf" value="{{ csrf }}">
       <label for="full_name">Nome e cognome</label><input id="full_name" name="full_name">
       <label for="username">Nome utente</label><input id="username" name="username" required>
+      <label for="email">Email <span class="muted small">(facoltativa, per recuperare la password)</span></label>
+      <input id="email" type="email" name="email" autocomplete="off">
       <label for="password">Password iniziale</label><input id="password" type="password" name="password" required autocomplete="new-password">
+      <p class="muted small" style="margin:4px 0 0">Al primo accesso l'utente dovrà sceglierne una sua.</p>
       <label for="role">Ruolo</label><select id="role" name="role">
         <option value="tecnico">Tecnico — clienti, ticket e comandi</option>
         <option value="lettura">Sola lettura — consultazione</option>

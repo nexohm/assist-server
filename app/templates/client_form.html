@@ -15,4 +15,16 @@
       <a class="btn ghost" href="{{ '/clienti/%d' % client.id if client.id else '/clienti' }}">Annulla</a></p>
   </form>
 </div>
+{% if client.id and can(user, 'settings') %}
+<div class="card danger-zone" style="max-width:640px;margin-top:16px">
+  <h2>Elimina cliente</h2>
+  <form method="post" action="/clienti/{{ client.id }}/elimina">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <p class="small">Elimina il cliente con <b>tutti i suoi impianti</b>, i ticket e lo storico. Gli agenti verranno scollegati.
+      Non si può annullare: per confermare scrivi <b>{{ client.name }}</b>.</p>
+    <div class="row"><input class="grow" name="confirm_name" autocomplete="off" required aria-label="Nome del cliente da eliminare">
+      <button class="btn danger">Elimina cliente</button></div>
+  </form>
+</div>
+{% endif %}
 {% endblock %}

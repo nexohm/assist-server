@@ -4,8 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{% block title %}{{ company }}{% endblock %} · {{ company }}</title>
-<link rel="stylesheet" href="/static/style.css">
-<script src="/static/app.js" defer></script>
+<link rel="stylesheet" href="{{ asset('style.css') }}">
+<script src="{{ asset('app.js') }}" defer></script>
 <style>:root { --brand: {{ brand_color }}; }</style>
 </head>
 <body>
@@ -18,6 +18,7 @@
     <a href="/clienti" class="{{ 'on' if p.startswith('/clienti') or p.startswith('/impianti') }}">Clienti</a>
     <a href="/ticket" class="{{ 'on' if p.startswith('/ticket') }}">Ticket</a>
     {% if can(user, 'users') %}<a href="/utenti" class="{{ 'on' if p.startswith('/utenti') }}">Utenti</a>{% endif %}
+    {% if can(user, 'companies') %}<a href="/aziende" class="{{ 'on' if p.startswith('/aziende') }}">Aziende</a>{% endif %}
     {% if can(user, 'settings') %}<a href="/impostazioni" class="{{ 'on' if p.startswith('/impostazioni') }}">Impostazioni</a>{% endif %}
   </nav>
   <div class="who">
@@ -27,17 +28,21 @@
 </div></header>
 {% endif %}
 <main>
-  {% if user and server_update and can(user, 'settings') %}
+  {% if user and server_update and can(user, 'server') %}
   <div class="update">
     <b>È disponibile la versione {{ server_update }} del server</b> (in uso: {{ VERSION }}).
     Per aggiornare, sul server: <code>sudo ha-suite aggiorna</code>
     · <a href="https://github.com/nexohm/assist-server/releases/tag/v{{ server_update }}" target="_blank" rel="noopener">novità</a>
   </div>
   {% endif %}
+  {% if mail_problem %}
+  <div class="update"><b>La posta del server non funziona:</b> {{ mail_problem }}.
+    Il recupero della password via email è fermo finché non lo sistemi · <a href="/impostazioni#email">Impostazioni</a></div>
+  {% endif %}
   {% if flash %}
   <div class="toast {{ 'err' if flash.error else 'ok' }}" role="{{ 'alert' if flash.error else 'status' }}" aria-live="polite">
-    <svg class="toast-icon" viewBox="0 0 52 52" aria-hidden="true">
-      <circle class="ring" cx="26" cy="26" r="23"/>
+    <svg class="toast-icon" viewBox="0 0 52 52" width="34" height="34" fill="none" aria-hidden="true">
+      <circle class="ring" cx="26" cy="26" r="23" fill="none"/>
       {% if flash.error %}<path class="mark" d="M18 18 L34 34 M34 18 L18 34"/>{% else %}<path class="mark" d="M15 27 L23 35 L38 18"/>{% endif %}
     </svg>
     <span class="toast-text">{{ flash.text }}</span>
