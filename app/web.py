@@ -92,6 +92,10 @@ def current_user(request: Request):
     return db.one("SELECT * FROM users WHERE id = ? AND active = 1", uid) if uid else None
 
 
+SERVER_TITLE = "Assistenza impianti"   # login e primo avvio: nessuna azienda ancora scelta
+DEFAULT_COLOR = "#0f766e"
+
+
 def valid_color(value):
     return isinstance(value, str) and re.fullmatch(r"#[0-9a-fA-F]{6}", value) is not None
 
@@ -194,13 +198,15 @@ def render(request, name, **ctx):
         detected = guess_public_url(request)
         if detected != db.get_setting("public_url_detected"):
             db.set_setting("public_url_detected", detected)  # per i link nelle notifiche Telegram
+    user = current_user(request)
+    co = db.company(user["company_id"]) if user and user.get("company_id") else None
     ctx.update(
         server_update=updates.server_update(),
         request=request,
-        user=current_user(request),
+        user=user,
         csrf=csrf_token(request),
-        company=db.get_setting("company_name", "Assistenza"),
-        brand_color=db.get_setting("brand_color", "#0f766e"),
+        company=co["name"] if co else SERVER_TITLE,
+        brand_color=co["brand_color"] if co else DEFAULT_COLOR,
         public_url=public_url(request),
         flash=take_flash(request, ctx),
     )
@@ -237,6 +243,30 @@ async def read_form(request: Request):
     return form
 
 
+# Ogni id nell'indirizzo deve appartenere all'azienda di chi è collegato: il controllo è qui,
+# una volta sola, così nessuna pagina può dimenticarlo. Un id di un'altra azienda risponde
+# «non trovato», esattamente come un id inesistente.
+OWNERSHIP = {
+    "cid": "SELECT 1 FROM clients WHERE id = ? AND company_id = ?",
+    "pid": "SELECT 1 FROM plants p JOIN clients c ON c.id = p.client_id WHERE p.id = ? AND c.company_id = ?",
+    "tid": ("SELECT 1 FROM tickets t JOIN plants p ON p.id = t.plant_id JOIN clients c ON c.id = p.client_id "
+            "WHERE t.id = ? AND c.company_id = ?"),
+    "uid": "SELECT 1 FROM users WHERE id = ? AND company_id = ?",
+    "cmd": ("SELECT 1 FROM commands m JOIN plants p ON p.id = m.plant_id JOIN clients c ON c.id = p.client_id "
+            "WHERE m.id = ? AND c.company_id = ?"),
+}
+
+
+def owns(user, params):
+    for key, value in params.items():
+        sql = OWNERSHIP.get(key)
+        if sql is None:
+            raise RuntimeError(f"parametro {key} senza controllo dell'azienda")  # nuovo indirizzo da aggiungere qui
+        if not user.get("company_id") or not db.one(sql, value, user["company_id"]):
+            return False
+    return True
+
+
 def guard(permission="view"):
     """Decoratore: richiede login e permesso. Per i POST verifica anche il token CSRF."""
     def wrap(handler):
@@ -253,6 +283,10 @@ def guard(permission="view"):
                 form = await read_form(request)
                 if form is None:
                     return render(request, "error.html", message="Sessione scaduta: ricarica la pagina e riprova.")
+            if not owns(user, request.path_params):
+                if request.url.path.endswith(".json"):
+                    return JSONResponse({"error": "not found"}, status_code=404)
+                return render(request, "error.html", message="Non trovato.")
             request.state.form = form
             request.state.user = user
             return await handler(request)
@@ -295,12 +329,13 @@ async def setup(request: Request):
     with db.connect() as c:
         if c.execute("SELECT id FROM users LIMIT 1").fetchone():
             return redirect("/login")
-        uid = c.execute("INSERT INTO users(username, full_name, password_hash, role, created_at) "
-                        "VALUES(?, ?, ?, 'admin', ?)", (username, form.get("full_name", "").strip(),
-                                                        hash_password(password), db.now())).lastrowid
-    db.set_setting("company_name", company)
-    color = form.get("brand_color", "")
-    db.set_setting("brand_color", color if valid_color(color) else "#0f766e")
+        color = form.get("brand_color", "")
+        co = c.execute("INSERT INTO companies(name, brand_color, created_at) VALUES(?, ?, ?)",
+                       (company[:80], color if valid_color(color) else DEFAULT_COLOR, db.now())).lastrowid
+        # chi installa il server ne è il gestore: crea le altre aziende e ne vede solo i numeri
+        uid = c.execute("INSERT INTO users(username, full_name, password_hash, role, company_id, is_manager, created_at) "
+                        "VALUES(?, ?, ?, 'admin', ?, 1, ?)", (username, form.get("full_name", "").strip(),
+                                                               hash_password(password), co, db.now())).lastrowid
     try:
         os.remove(SETUP_CODE_PATH)
     except OSError:
@@ -374,8 +409,9 @@ def plant_status(p):
 
 @guard()
 async def dashboard(request: Request):
+    co = request.state.user["company_id"]
     plants = db.all_("SELECT p.*, c.name AS client_name FROM plants p JOIN clients c ON c.id = p.client_id "
-                     "ORDER BY c.name, p.name")
+                     "WHERE c.company_id = ? ORDER BY c.name, p.name", co)
     for p in plants:
         p["status"] = plant_status(p)
         p["diag"] = sanitize.stored_diagnostics(p["last_diag"])
@@ -392,8 +428,9 @@ async def dashboard(request: Request):
         filtro, shown = None, plants
     open_tickets = db.all_("SELECT t.*, p.name AS plant_name, c.name AS client_name FROM tickets t "
                            "JOIN plants p ON p.id = t.plant_id JOIN clients c ON c.id = p.client_id "
-                           "WHERE t.status != 'chiuso' ORDER BY t.updated_at DESC LIMIT 10")
-    n_open = db.one("SELECT COUNT(*) AS n FROM tickets WHERE status != 'chiuso'")["n"]
+                           "WHERE t.status != 'chiuso' AND c.company_id = ? ORDER BY t.updated_at DESC LIMIT 10", co)
+    n_open = db.one("SELECT COUNT(*) AS n FROM tickets t JOIN plants p ON p.id = t.plant_id "
+                    "JOIN clients c ON c.id = p.client_id WHERE t.status != 'chiuso' AND c.company_id = ?", co)["n"]
     return render(request, "dashboard.html", plants=shown, total=len(plants), counts=counts, filtro=filtro,
                   open_tickets=open_tickets, n_open=n_open)
 
@@ -403,13 +440,14 @@ async def dashboard(request: Request):
 @guard()
 async def clients_list(request: Request):
     q = request.query_params.get("q", "").strip()
+    co = request.state.user["company_id"]
     sql = ("SELECT c.*, COUNT(p.id) AS n_plants FROM clients c LEFT JOIN plants p ON p.client_id = c.id "
-           "{where} GROUP BY c.id ORDER BY c.name")
+           "WHERE c.company_id = ? {where} GROUP BY c.id ORDER BY c.name")
     if q:
-        rows = db.all_(sql.format(where="WHERE c.name LIKE ? OR c.email LIKE ? OR c.address LIKE ?"),
-                       f"%{q}%", f"%{q}%", f"%{q}%")
+        rows = db.all_(sql.format(where="AND (c.name LIKE ? OR c.email LIKE ? OR c.address LIKE ?)"),
+                       co, f"%{q}%", f"%{q}%", f"%{q}%")
     else:
-        rows = db.all_(sql.format(where=""))
+        rows = db.all_(sql.format(where=""), co)
     return render(request, "clients.html", clients=rows, q=q)
 
 
@@ -424,8 +462,8 @@ async def client_new(request: Request):
     data = {f: form.get(f, "").strip() for f in CLIENT_FIELDS}
     if not data["name"]:
         return render(request, "client_form.html", client=data, errors=["Il nome è obbligatorio."])
-    cid = db.run("INSERT INTO clients(name, email, phone, address, notes, created_at) VALUES(?, ?, ?, ?, ?, ?)",
-                 *[data[f] for f in CLIENT_FIELDS], db.now())
+    cid = db.run("INSERT INTO clients(name, email, phone, address, notes, company_id, created_at) "
+                 "VALUES(?, ?, ?, ?, ?, ?, ?)", *[data[f] for f in CLIENT_FIELDS], request.state.user["company_id"], db.now())
     return redirect(f"/clienti/{cid}", "Cliente creato.", request)
 
 
@@ -647,7 +685,7 @@ async def plant_admin(request: Request):
 
 @guard()
 async def command_detail(request: Request):
-    cmd = db.one("SELECT * FROM commands WHERE id = ?", request.path_params["cid"])
+    cmd = db.one("SELECT * FROM commands WHERE id = ?", request.path_params["cmd"])
     if not cmd:
         return JSONResponse({"error": "not found"}, status_code=404)
     return JSONResponse({**cmd, "result": db.loads(cmd["result"])})
@@ -661,7 +699,8 @@ async def tickets_list(request: Request):
     where = {"aperti": "t.status != 'chiuso'", "chiusi": "t.status = 'chiuso'", "tutti": "1=1"}.get(status, "1=1")
     rows = db.all_("SELECT t.*, p.name AS plant_name, c.name AS client_name, u.username AS assigned "
                    "FROM tickets t JOIN plants p ON p.id = t.plant_id JOIN clients c ON c.id = p.client_id "
-                   f"LEFT JOIN users u ON u.id = t.assigned_to WHERE {where} ORDER BY t.updated_at DESC")
+                   f"LEFT JOIN users u ON u.id = t.assigned_to WHERE c.company_id = ? AND {where} "
+                   "ORDER BY t.updated_at DESC", request.state.user["company_id"])
     return render(request, "tickets.html", tickets=rows, stato=status)
 
 
@@ -674,7 +713,8 @@ async def ticket_detail(request: Request):
         return render(request, "error.html", message="Ticket non trovato.")
     t["diag"] = sanitize.stored_diagnostics(t["diagnostics"])
     messages = db.all_("SELECT * FROM ticket_messages WHERE ticket_id = ? ORDER BY id", t["id"])
-    users = db.all_("SELECT id, username, full_name FROM users WHERE active = 1 AND role != 'lettura' ORDER BY username")
+    users = db.all_("SELECT id, username, full_name FROM users WHERE active = 1 AND role != 'lettura' "
+                    "AND company_id = ? ORDER BY username", request.state.user["company_id"])
     return render(request, "ticket_detail.html", t=t, messages=messages, users=users)
 
 
@@ -687,8 +727,8 @@ async def ticket_reply(request: Request):
     text = form.get("text", "").strip()
     assigned = form.get("assigned_to")
     if assigned:
-        if not assigned.isdigit() or not db.one("SELECT id FROM users WHERE id = ? AND active = 1 AND role != 'lettura'",
-                                                int(assigned)):
+        if not assigned.isdigit() or not db.one("SELECT id FROM users WHERE id = ? AND active = 1 AND role != 'lettura' "
+                                                "AND company_id = ?", int(assigned), request.state.user["company_id"]):
             return redirect(f"/ticket/{tid}", "Utente da assegnare non valido.", request, error=True)
     ts = db.now()
     if text:
@@ -720,13 +760,15 @@ async def users_page(request: Request):
             errors.append("La password deve avere almeno 10 caratteri.")
         if role not in ROLES:
             errors.append("Ruolo non valido.")
+        # i nomi utente sono unici su tutto il server: il login è uno solo per tutte le aziende
         if db.one("SELECT id FROM users WHERE username = ?", username):
-            errors.append("Nome utente già in uso.")
+            errors.append("Nome utente già in uso (anche da un'altra azienda dello stesso server): scegline un altro.")
         if not errors:
-            db.run("INSERT INTO users(username, full_name, password_hash, role, created_at) VALUES(?, ?, ?, ?, ?)",
-                   username, form.get("full_name", "").strip(), hash_password(password), role, db.now())
+            db.run("INSERT INTO users(username, full_name, password_hash, role, company_id, created_at) VALUES(?, ?, ?, ?, ?, ?)",
+                   username, form.get("full_name", "").strip(), hash_password(password), role,
+                   request.state.user["company_id"], db.now())
             return redirect("/utenti", "Utente creato.", request)
-    users = db.all_("SELECT * FROM users ORDER BY active DESC, username")
+    users = db.all_("SELECT * FROM users WHERE company_id = ? ORDER BY active DESC, username", request.state.user["company_id"])
     return render(request, "users.html", users=users, errors=errors)
 
 
@@ -766,6 +808,9 @@ async def user_password(request: Request):
     new = request.state.form.get("password", "")
     if not target:
         return redirect("/utenti", "Utente non trovato.", request, error=True)
+    if target["is_manager"]:
+        # un altro amministratore dell'azienda non deve poter prendere il posto del gestore del server
+        return redirect("/utenti", "La password del gestore la cambia solo lui, da «Il mio account».", request, error=True)
     if len(new) < MIN_PASSWORD:
         return redirect("/utenti", f"La password deve avere almeno {MIN_PASSWORD} caratteri.", request, error=True)
     db.run("UPDATE users SET password_hash = ? WHERE id = ?", hash_password(new), uid)
@@ -777,43 +822,50 @@ async def user_toggle(request: Request):
     uid = request.path_params["uid"]
     if uid == request.state.user["id"]:
         return redirect("/utenti", "Non puoi disattivare te stesso.", request, error=True)
+    if db.one("SELECT id FROM users WHERE id = ? AND is_manager = 1", uid):
+        return redirect("/utenti", "Il gestore del server non si può disattivare.", request, error=True)
     db.run("UPDATE users SET active = 1 - active WHERE id = ?", uid)
     return redirect("/utenti", "Utente aggiornato.", request)
 
 
 @guard("settings")
 async def settings_page(request: Request):
+    user = request.state.user
+    co = user["company_id"]
     if request.method == "POST":
         form = request.state.form
-        name = form.get("company_name", "").strip()
+        name = " ".join(form.get("company_name", "").split())[:80]
         if name:
-            db.set_setting("company_name", name)
+            db.run("UPDATE companies SET name = ? WHERE id = ?", name, co)
         color = form.get("brand_color", "")
         if valid_color(color):
-            db.set_setting("brand_color", color)
-        url = form.get("public_url", "").strip().rstrip("/")
-        if url and not (url.startswith("https://") or url.startswith("http://")):
-            return redirect("/impostazioni", "L'indirizzo pubblico deve iniziare con https://", request, error=True)
-        db.set_setting("public_url", url)
+            db.run("UPDATE companies SET brand_color = ? WHERE id = ?", color, co)
+        # l'indirizzo pubblico è uno solo per tutto il server: lo decide il gestore
+        if can(user, "server") and "public_url" in form:
+            url = form.get("public_url", "").strip().rstrip("/")
+            if url and not (url.startswith("https://") or url.startswith("http://")):
+                return redirect("/impostazioni", "L'indirizzo pubblico deve iniziare con https://", request, error=True)
+            db.set_setting("public_url", url)
         return redirect("/impostazioni", "Impostazioni salvate.", request)
     return render(request, "settings.html", guessed_url=guess_public_url(request),
                   saved_url=db.get_setting("public_url", ""),
-                  tg_token_set=bool(db.get_setting("telegram_token")),
-                  tg_chat_id=db.get_setting("telegram_chat_id", ""),
-                  tg_events={k: (label, db.get_setting(k, "1") == "1") for k, label in notify.EVENTS.items()},
-                  upd=_update_status())
+                  tg_token_set=bool(db.get_csetting(co, "telegram_token")),
+                  tg_chat_id=db.get_csetting(co, "telegram_chat_id", ""),
+                  tg_events={k: (label, db.get_csetting(co, k, "1") == "1") for k, label in notify.EVENTS.items()},
+                  upd=_update_status(co) if can(user, "server") else None)
 
 
-def _update_status():
+def _update_status(company_id):
     st = updates.status()
     for k in ("checked_at", "attempt_at"):
         st[k] = datetime.fromtimestamp(st[k], timezone.utc) if st[k] else None
-    agents = db.all_("SELECT agent_version FROM plants WHERE paired_at IS NOT NULL AND revoked = 0 AND agent_version IS NOT NULL")
+    agents = db.all_("SELECT p.agent_version FROM plants p JOIN clients c ON c.id = p.client_id WHERE c.company_id = ? "
+                     "AND p.paired_at IS NOT NULL AND p.revoked = 0 AND p.agent_version IS NOT NULL", company_id)
     st["outdated_agents"] = sum(1 for p in agents if updates.agent_outdated(p["agent_version"]))
     return st
 
 
-@guard("settings")
+@guard("server")
 async def update_check(request: Request):
     error = await asyncio.to_thread(updates.check_now)
     if error:
@@ -827,41 +879,85 @@ async def update_check(request: Request):
 @guard("settings")
 async def telegram_settings(request: Request):
     form = request.state.form
+    co = request.state.user["company_id"]
     action = form.get("azione", "salva")
     token = form.get("telegram_token", "").strip()
     if token:
-        db.set_setting("telegram_token", token)
+        db.set_csetting(co, "telegram_token", token)
     if action == "rimuovi":
         for k in ("telegram_token", "telegram_chat_id"):
-            db.set_setting(k, "")
+            db.set_csetting(co, k, "")
         return redirect("/impostazioni#telegram", "Notifiche Telegram disattivate.", request)
     if action == "rileva":
-        if not db.get_setting("telegram_token"):
+        if not db.get_csetting(co, "telegram_token"):
             return redirect("/impostazioni#telegram", "Inserisci prima il token del bot.", request, error=True)
         try:
-            chat_id, name = await asyncio.to_thread(notify.detect_chat_id, db.get_setting("telegram_token"))
+            chat_id, name = await asyncio.to_thread(notify.detect_chat_id, db.get_csetting(co, "telegram_token"))
         except RuntimeError as e:
             return redirect("/impostazioni#telegram", f"Telegram: {e}", request, error=True)
         if not chat_id:
             return redirect("/impostazioni#telegram",
                             "Nessun messaggio trovato: apri il bot su Telegram, scrivigli /start e riprova.", request, error=True)
-        db.set_setting("telegram_chat_id", chat_id)
+        db.set_csetting(co, "telegram_chat_id", chat_id)
         return redirect("/impostazioni#telegram", f"Chat trovata: {name or chat_id}. Ora prova con «Invia prova».", request)
     chat_id = form.get("telegram_chat_id", "").strip()
     if chat_id:
-        db.set_setting("telegram_chat_id", chat_id)
+        db.set_csetting(co, "telegram_chat_id", chat_id)
     for key in notify.EVENTS:
-        db.set_setting(key, "1" if form.get(key) == "1" else "0")
+        db.set_csetting(co, key, "1" if form.get(key) == "1" else "0")
     if action == "prova":
-        if not notify.configured():
+        if not notify.configured(co):
             return redirect("/impostazioni#telegram", "Servono sia il token del bot sia il chat ID.", request, error=True)
         try:
-            await asyncio.to_thread(notify.send_now, f"✅ Notifiche di <b>{db.get_setting('company_name', 'Assistenza')}</b> "
+            await asyncio.to_thread(notify.send_now, co, f"✅ Notifiche di <b>{notify.esc(db.company(co)['name'])}</b> "
                                                      "attive: riceverai qui gli avvisi sui tuoi impianti.")
         except RuntimeError as e:
             return redirect("/impostazioni#telegram", f"Invio non riuscito: {e}", request, error=True)
         return redirect("/impostazioni#telegram", "Messaggio di prova inviato: controlla Telegram.", request)
     return redirect("/impostazioni#telegram", "Impostazioni Telegram salvate.", request)
+
+
+# ---------- aziende (solo il gestore del server) ----------
+
+@guard("companies")
+async def companies_page(request: Request):
+    """Il gestore crea le aziende e ne vede solo i numeri: nessun nome di cliente, impianto o ticket."""
+    errors, form_data = [], {}
+    if request.method == "POST":
+        form = request.state.form
+        form_data = {k: form.get(k, "") for k in ("name", "brand_color", "full_name", "username")}
+        name = " ".join(form.get("name", "").split())[:80]
+        username = form.get("username", "").strip().lower()
+        password = form.get("password", "")
+        if not name:
+            errors.append("Inserisci il nome dell'azienda.")
+        elif db.one("SELECT id FROM companies WHERE lower(name) = lower(?)", name):
+            errors.append("Esiste già un'azienda con questo nome.")
+        if len(username) < 3:
+            errors.append("Il nome utente dell'amministratore deve avere almeno 3 caratteri.")
+        elif db.one("SELECT id FROM users WHERE username = ?", username):
+            errors.append("Nome utente già in uso: scegline un altro.")
+        if len(password) < MIN_PASSWORD:
+            errors.append(f"La password iniziale deve avere almeno {MIN_PASSWORD} caratteri.")
+        if not errors:
+            color = form.get("brand_color", "")
+            with db.connect() as c:
+                co = c.execute("INSERT INTO companies(name, brand_color, created_at) VALUES(?, ?, ?)",
+                               (name, color if valid_color(color) else DEFAULT_COLOR, db.now())).lastrowid
+                c.execute("INSERT INTO users(username, full_name, password_hash, role, company_id, created_at) "
+                          "VALUES(?, ?, ?, 'admin', ?, ?)", (username, form.get("full_name", "").strip(),
+                                                              hash_password(password), co, db.now()))
+            log.info("Azienda %s «%s» creata da %s", co, name, request.state.user["username"])
+            return redirect("/aziende", f"Azienda «{name}» creata. Comunica a {username} indirizzo, nome utente e "
+                                        "password iniziale: al primo accesso potrà cambiarla da «Il mio account».", request)
+    companies = db.all_(
+        "SELECT co.id, co.name, co.brand_color, co.created_at, "
+        "(SELECT COUNT(*) FROM clients c WHERE c.company_id = co.id) AS n_clients, "
+        "(SELECT COUNT(*) FROM plants p JOIN clients c ON c.id = p.client_id WHERE c.company_id = co.id) AS n_plants "
+        "FROM companies co ORDER BY co.name")
+    totals = {"companies": len(companies), "clients": sum(c["n_clients"] for c in companies),
+              "plants": sum(c["n_plants"] for c in companies)}
+    return render(request, "companies.html", companies=companies, totals=totals, errors=errors, form=form_data)
 
 
 @guard("edit")
@@ -899,7 +995,7 @@ routes = [
     Route("/impianti/{pid:int}/elimina", plant_delete, methods=["POST"]),
     Route("/clienti/{cid:int}/elimina", client_delete, methods=["POST"]),
     Route("/impianti/{pid:int}/comandi", plant_command, methods=["POST"]),
-    Route("/comandi/{cid:int}.json", command_detail),
+    Route("/comandi/{cmd:int}.json", command_detail),
     Route("/ticket", tickets_list),
     Route("/ticket/{tid:int}", ticket_detail),
     Route("/ticket/{tid:int}/rispondi", ticket_reply, methods=["POST"]),
@@ -907,6 +1003,7 @@ routes = [
     Route("/utenti/{uid:int}/attiva", user_toggle, methods=["POST"]),
     Route("/utenti/{uid:int}/password", user_password, methods=["POST"]),
     Route("/account", account_page, methods=["GET", "POST"]),
+    Route("/aziende", companies_page, methods=["GET", "POST"]),
     Route("/impostazioni", settings_page, methods=["GET", "POST"]),
     Route("/impostazioni/telegram", telegram_settings, methods=["POST"]),
     Route("/impostazioni/aggiornamenti", update_check, methods=["POST"]),

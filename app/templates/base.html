@@ -18,6 +18,7 @@
     <a href="/clienti" class="{{ 'on' if p.startswith('/clienti') or p.startswith('/impianti') }}">Clienti</a>
     <a href="/ticket" class="{{ 'on' if p.startswith('/ticket') }}">Ticket</a>
     {% if can(user, 'users') %}<a href="/utenti" class="{{ 'on' if p.startswith('/utenti') }}">Utenti</a>{% endif %}
+    {% if can(user, 'companies') %}<a href="/aziende" class="{{ 'on' if p.startswith('/aziende') }}">Aziende</a>{% endif %}
     {% if can(user, 'settings') %}<a href="/impostazioni" class="{{ 'on' if p.startswith('/impostazioni') }}">Impostazioni</a>{% endif %}
   </nav>
   <div class="who">
@@ -27,7 +28,7 @@
 </div></header>
 {% endif %}
 <main>
-  {% if user and server_update and can(user, 'settings') %}
+  {% if user and server_update and can(user, 'server') %}
   <div class="update">
     <b>È disponibile la versione {{ server_update }} del server</b> (in uso: {{ VERSION }}).
     Per aggiornare, sul server: <code>sudo ha-suite aggiorna</code>

@@ -80,6 +80,20 @@ Rischio che resta: chi controlla il server dell'installatore **mentre** un acces
 una password e ottenere un amministratore su quell'impianto (il cliente ne riceve notifica). Per questo il
 server va protetto come indicato sotto, e conviene concedere durate brevi.
 
+## Più aziende sullo stesso server (dal server 0.2.7)
+
+- Ogni utente e ogni cliente appartiene a un'azienda; impianti, ticket e comandi la seguono attraverso il cliente.
+- Il controllo è in un punto solo: ogni id nell'indirizzo di una pagina (cliente, impianto, ticket, utente, comando)
+  viene verificato contro l'azienda di chi è collegato prima di eseguire la pagina. Un id di un'altra azienda
+  risponde «non trovato», come un id inesistente. Un indirizzo nuovo con un parametro non previsto fa errore
+  invece di passare senza controllo.
+- Gli elenchi (panoramica, clienti, ticket, utenti, tecnici da assegnare) filtrano per azienda.
+- Il gestore del server vede delle altre aziende solo nome e numeri (clienti, impianti). Indirizzo pubblico e
+  aggiornamenti sono suoi; un altro amministratore della sua azienda non può reimpostargli la password né disattivarlo.
+- I nomi utente sono unici su tutto il server (un solo login per tutte le aziende).
+- Bot Telegram e scelte delle notifiche sono per azienda.
+- Test: `tests/run_security.sh`, sezione «più aziende» (letture e scritture incrociate, assegnazioni, Telegram, permessi).
+
 ## Da sapere / non coperto
 
 - **Sessioni**: il cookie è firmato, non salvato sul server. Il logout cancella il cookie dal browser,

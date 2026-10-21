@@ -26,6 +26,12 @@ def ring(plant_id: int):
         bell.set()
 
 
+def branding(plant_id):
+    """Nome e colore dell'azienda a cui appartiene l'impianto: li vede il cliente nel pannello e nelle notifiche."""
+    co = db.company_of_plant(plant_id) or {}
+    return {"server_name": co.get("name") or "Assistenza", "brand_color": co.get("brand_color") or "#0f766e"}
+
+
 def error(status, message):
     return JSONResponse({"error": message}, status_code=status)
 
@@ -108,8 +114,7 @@ async def pair(request: Request):
     return JSONResponse({
         "plant_id": plant["id"],
         "token": token,
-        "server_name": db.get_setting("company_name", "Assistenza"),
-        "brand_color": db.get_setting("brand_color", "#0f766e"),
+        **branding(plant["id"]),
         "protocol": PROTOCOL_VERSION,
     })
 
@@ -148,7 +153,7 @@ async def report(request: Request):
         db.run("UPDATE plants SET last_diag = ?, last_diag_at = ? WHERE id = ?",
                json.dumps(diag), db.now(), plant["id"])
     pending = db.one("SELECT COUNT(*) AS n FROM commands WHERE plant_id = ? AND status = 'in_attesa'", plant["id"])
-    # Nome e colore dell'installatore viaggiano a ogni rapporto: se cambiano, il pannello del cliente si aggiorna.
+    # Nome e colore dell'azienda viaggiano a ogni rapporto: se cambiano, il pannello del cliente si aggiorna.
     # Ultimo aggiornamento dei ticket dell'impianto: se cambia, l'agente li rilegge e avvisa il cliente.
     last_ticket = db.one("SELECT MAX(updated_at) AS ts FROM tickets WHERE plant_id = ?", plant["id"])
     requested = db.one("SELECT admin_requested_at, admin_requested_by FROM plants WHERE id = ?", plant["id"])
@@ -156,8 +161,7 @@ async def report(request: Request):
                          "admin_requested": requested["admin_requested_at"],
                          "admin_requested_by": requested["admin_requested_by"] if requested["admin_requested_at"] else None,
                          "tickets_updated": last_ticket["ts"],
-                         "server_name": db.get_setting("company_name", "Assistenza"),
-                         "brand_color": db.get_setting("brand_color", "#0f766e")})
+                         **branding(plant["id"])})
 
 
 RESEND_AFTER = 60   # secondi senza risultato prima di rispedire un comando

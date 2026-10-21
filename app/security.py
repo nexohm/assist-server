@@ -62,5 +62,14 @@ def normalize_pair_code(code: str) -> str:
     return f"{raw[:4]}-{raw[4:]}" if len(raw) == 8 else ""
 
 
+# Permessi del gestore del server (oltre a quelli del suo ruolo nella propria azienda):
+# creare aziende, vederne i numeri, aggiornamenti e indirizzo pubblico del server.
+MANAGER_PERMISSIONS = {"companies", "server"}
+
+
 def can(user, permission: str) -> bool:
-    return bool(user) and permission in ROLES.get(user["role"], set())
+    if not user:
+        return False
+    if permission in MANAGER_PERMISSIONS:
+        return bool(user.get("is_manager")) and user["role"] == "admin"
+    return permission in ROLES.get(user["role"], set())

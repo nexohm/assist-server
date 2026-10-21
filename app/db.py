@@ -116,6 +116,46 @@ MIGRATIONS = [
     """
     ALTER TABLE plants ADD COLUMN admin_requested_by TEXT;
     """,
+    # 7 — più aziende sullo stesso server. Ogni utente e ogni cliente appartiene a un'azienda;
+    #     impianti, ticket e comandi la seguono attraverso il cliente. I dati già presenti
+    #     diventano l'azienda 1 e il primo amministratore ne è il gestore.
+    #     Le vecchie impostazioni restano nella tabella settings: tornando a una versione
+    #     precedente il server continua a funzionare (con nome e Telegram com'erano prima).
+    """
+    CREATE TABLE companies (
+        id INTEGER PRIMARY KEY,
+        name TEXT NOT NULL,
+        brand_color TEXT NOT NULL DEFAULT '#0f766e',
+        created_at TEXT NOT NULL
+    );
+    CREATE TABLE company_settings (
+        company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+        key TEXT NOT NULL,
+        value TEXT,
+        PRIMARY KEY (company_id, key)
+    );
+    ALTER TABLE users ADD COLUMN company_id INTEGER REFERENCES companies(id) ON DELETE CASCADE;
+    ALTER TABLE users ADD COLUMN is_manager INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE clients ADD COLUMN company_id INTEGER REFERENCES companies(id) ON DELETE CASCADE;
+
+    INSERT INTO companies(id, name, brand_color, created_at)
+        SELECT 1,
+               COALESCE((SELECT NULLIF(TRIM(value), '') FROM settings WHERE key = 'company_name'), 'Assistenza'),
+               COALESCE((SELECT value FROM settings WHERE key = 'brand_color'), '#0f766e'),
+               strftime('%Y-%m-%dT%H:%M:%S+00:00', 'now')
+        WHERE EXISTS (SELECT 1 FROM users) OR EXISTS (SELECT 1 FROM clients);
+    UPDATE users SET company_id = 1 WHERE EXISTS (SELECT 1 FROM companies WHERE id = 1);
+    UPDATE clients SET company_id = 1 WHERE EXISTS (SELECT 1 FROM companies WHERE id = 1);
+    UPDATE users SET is_manager = 1
+        WHERE id = (SELECT MIN(id) FROM users WHERE role = 'admin' AND active = 1);
+    INSERT INTO company_settings(company_id, key, value)
+        SELECT 1, key, value FROM settings
+        WHERE key IN ('telegram_token', 'telegram_chat_id', 'notify_tickets', 'notify_offline', 'notify_critical')
+          AND EXISTS (SELECT 1 FROM companies WHERE id = 1);
+
+    CREATE INDEX idx_users_company ON users(company_id);
+    CREATE INDEX idx_clients_company ON clients(company_id);
+    """,
 ]
 
 
@@ -223,6 +263,28 @@ def get_setting(key, default=None):
 def set_setting(key, value):
     run("INSERT INTO settings(key, value) VALUES(?, ?) "
         "ON CONFLICT(key) DO UPDATE SET value = excluded.value", key, value)
+
+
+# ---- aziende ----
+
+def company(company_id):
+    return one("SELECT * FROM companies WHERE id = ?", company_id)
+
+
+def company_of_plant(plant_id):
+    return one("SELECT co.* FROM companies co JOIN clients c ON c.company_id = co.id "
+               "JOIN plants p ON p.client_id = c.id WHERE p.id = ?", plant_id)
+
+
+def get_csetting(company_id, key, default=None):
+    """Impostazione di un'azienda (Telegram e scelte delle notifiche)."""
+    row = one("SELECT value FROM company_settings WHERE company_id = ? AND key = ?", company_id, key)
+    return row["value"] if row else default
+
+
+def set_csetting(company_id, key, value):
+    run("INSERT INTO company_settings(company_id, key, value) VALUES(?, ?, ?) "
+        "ON CONFLICT(company_id, key) DO UPDATE SET value = excluded.value", company_id, key, value)
 
 
 def loads(value, default=None):

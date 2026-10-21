@@ -41,7 +41,8 @@ ogni cliente ha un **add-on agente** sul proprio Home Assistant. Il cliente non 
 - **"Il mio account"**: ognuno cambia la propria password; l'amministratore può reimpostarla agli altri
 - **link all'Home Assistant del cliente**: comunicato dall'agente (indirizzo esterno o interno) o inserito a mano
 - **avvisi di aggiornamento**: banner per gli amministratori quando esce una nuova versione del server, ed etichetta
-  "agente da aggiornare" sugli impianti con un agente vecchio (controllo su GitHub ogni 6 ore, `UPDATE_CHECK=0` per disattivarlo)
+  "agente da aggiornare" sugli impianti con un agente vecchio (controllo su GitHub ogni ora, «Controlla adesso» in
+  Impostazioni, `UPDATE_CHECK=0` per disattivarlo)
 - **conferme animate**: ogni salvataggio mostra un avviso con spunta (o una X rossa se qualcosa non va) e i
   pulsanti mostrano un indicatore mentre lavorano
 - panoramica con **caselle cliccabili** (offline, critici, da controllare, ticket aperti) e per ogni impianto
@@ -50,6 +51,11 @@ ogni cliente ha un **add-on agente** sul proprio Home Assistant. Il cliente non 
 - pulsanti per **copiare** codice di abbinamento e indirizzo del server
 - **accesso amministratore temporaneo** all'Home Assistant del cliente: l'installatore lo chiede, il cliente lo
   concede dal pannello per il tempo che sceglie; password nuova a ogni ingresso, mai salvata (vedi docs/SECURITY.md)
+- **più aziende sullo stesso server**: chi installa il server ne è il **gestore**; dalla pagina *Aziende* crea le
+  altre aziende con il loro primo amministratore. Ogni azienda ha i suoi utenti, clienti, impianti, ticket, nome,
+  colore e bot Telegram, e non vede nulla delle altre; il gestore vede delle altre solo quante sono e quanti clienti
+  e impianti hanno. Indirizzo del server, aggiornamenti e indirizzo pubblico restano al gestore. Un solo indirizzo
+  per tutti: ogni impianto sa a quale azienda appartiene grazie al codice di abbinamento
 
 **Agente (add-on)**
 - nessuna dipendenza esterna: solo Python standard
@@ -135,7 +141,7 @@ docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build       
 
 ## Prossimi passi (ordine consigliato)
 
-1. Notifiche all'installatore per impianti offline e nuovi ticket (email / Telegram)
+1. Aziende: recupero della password, eliminazione di un'azienda e limiti di clienti e impianti per azienda
 2. Report PDF per il cliente con il marchio dell'installatore
 3. Nuovi comandi: `create_backup`, `reload_integration`, `apply_blueprint` (libreria di configurazioni pronte)
 4. Integrazione HACS con sensori in HA del cliente (ticket aperti, stato assistenza)

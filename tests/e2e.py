@@ -71,6 +71,9 @@ web.post(BASE + "/impostazioni/telegram", data={"csrf": csrf(r.text), "telegram_
 st = web.get(BASE + "/impostazioni").text
 check("impostato" in st, "Telegram: il token non viene mostrato nella pagina")
 check('id="aggiornamenti"' in st and "UPDATE_CHECK=0" in st, "Impostazioni: scheda Aggiornamenti con lo stato del controllo")
+az = web.get(BASE + "/aziende").text
+check('href="/aziende"' in az and "Rossi Impianti" in az and "la tua" in az,
+      "chi installa il server ne è il gestore: vede la pagina Aziende con la propria")
 
 # 2. cliente + impianto
 r = web.get(BASE + "/clienti/nuovo")

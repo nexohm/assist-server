@@ -6,8 +6,9 @@
   <div class="card table-wrap"><table>
     <tr><th>Utente</th><th>Ruolo</th><th>Stato</th><th></th></tr>
     {% for u in users %}<tr><td><b>{{ u.full_name or u.username }}</b><br><span class="muted small">{{ u.username }}</span></td>
-      <td>{{ ROLE_LABELS[u.role] }}</td><td>{% if u.active %}<span class="badge s-ok">Attivo</span>{% else %}<span class="badge s-offline">Disattivato</span>{% endif %}</td>
-      <td>{% if u.id != user.id %}
+      <td>{{ ROLE_LABELS[u.role] }}{% if u.is_manager %}<br><span class="muted small">gestore del server</span>{% endif %}</td><td>{% if u.active %}<span class="badge s-ok">Attivo</span>{% else %}<span class="badge s-offline">Disattivato</span>{% endif %}</td>
+      <td>{% if u.is_manager and u.id != user.id %}<span class="muted small">Solo il gestore può modificare il proprio account.</span>
+        {% elif u.id != user.id %}
         <div class="row">
         <form class="inline" method="post" action="/utenti/{{ u.id }}/attiva"><input type="hidden" name="csrf" value="{{ csrf }}">
           <button class="btn ghost small">{{ 'Disattiva' if u.active else 'Riattiva' }}</button></form>

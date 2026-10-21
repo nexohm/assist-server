@@ -58,7 +58,7 @@ admin.post(BASE + "/setup", data={"csrf": csrf(admin.get(BASE + "/setup").text),
                                   "full_name": "Mario", "username": "mario", "password": "passwordsicura1",
                                   "password2": "passwordsicura1"})
 check("Panoramica" in admin.get(BASE + "/").text, "(preparazione) amministratore creato con il codice corretto")
-color = db.execute("SELECT value FROM settings WHERE key = 'brand_color'").fetchone()
+color = db.execute("SELECT brand_color FROM companies ORDER BY id LIMIT 1").fetchone()
 check(bool(color) and re.fullmatch(r"#[0-9a-fA-F]{6}", color[0] or ""), "colore del marchio validato al primo avvio",
       f"salvato: {color[0] if color else None}")
 code_file = os.path.join(DATA, "setup-code.txt")
@@ -138,10 +138,10 @@ tec, _ = login("tecnico1")
 # ---------------------------------------------------------------- permessi per ruolo
 def refused(sess, path, page, data):
     before = db.execute("SELECT (SELECT COUNT(*) FROM clients) + (SELECT COUNT(*) FROM users) + "
-                        "(SELECT COUNT(*) FROM commands) + (SELECT COUNT(*) FROM settings)").fetchone()[0]
+                        "(SELECT COUNT(*) FROM commands) + (SELECT COUNT(*) FROM settings) + (SELECT COUNT(*) FROM companies)").fetchone()[0]
     r = form_post(sess, path, page, data)
     after = db.execute("SELECT (SELECT COUNT(*) FROM clients) + (SELECT COUNT(*) FROM users) + "
-                       "(SELECT COUNT(*) FROM commands) + (SELECT COUNT(*) FROM settings)").fetchone()[0]
+                       "(SELECT COUNT(*) FROM commands) + (SELECT COUNT(*) FROM settings) + (SELECT COUNT(*) FROM companies)").fetchone()[0]
     return after == before and ("permessi" in r.text or r.status_code in (302, 303, 403))
 
 check(refused(let, "/clienti/nuovo", "/", {"name": "da lettore"}), "ruolo lettura: non può creare clienti")
@@ -306,6 +306,90 @@ codes = [safe_status(lambda: form_post(admin, "/ticket/99999/rispondi", "/ticket
          safe_status(lambda: form_post(admin, f"/ticket/{tid_b}/rispondi", f"/ticket/{tid_b}", {"text": "", "assigned_to": "abc"})),
          safe_status(lambda: form_post(admin, f"/ticket/{tid_b}/rispondi", f"/ticket/{tid_b}", {"text": "", "assigned_to": "99999"}))]
 check(all(c < 500 for c in codes), "dashboard: risposte a ticket inesistenti o dati errati non danno errore 500", f"risposte {codes}")
+
+# ---------------------------------------------------------------- più aziende sullo stesso server
+check(refused(tec, "/aziende", "/", {"name": "Azienda pirata", "username": "pirata2", "password": "passwordlunga1"}),
+      "aziende: un tecnico non può creare aziende")
+form_post(admin, "/aziende", "/aziende", {"name": "Bianchi Elettrica", "brand_color": "#aa0000", "full_name": "Luigi Bianchi",
+                                          "username": "bianchi", "password": "passwordbianchi1"})
+r = form_post(admin, "/aziende", "/aziende", {"name": "Altra", "username": "tecnico1", "password": "passwordlunga1"})
+check(db.execute("SELECT COUNT(*) FROM users WHERE username = 'tecnico1'").fetchone()[0] == 1
+      and not db.execute("SELECT 1 FROM companies WHERE name = 'Altra'").fetchone(),
+      "aziende: un nome utente già usato da un'altra azienda non si può riusare")
+bia, _ = login("bianchi", "passwordbianchi1")
+check("Panoramica" in bia.get(BASE + "/").text, "(preparazione) amministratore della seconda azienda collegato")
+mario_id = db.execute("SELECT id FROM users WHERE username = 'mario'").fetchone()[0]
+tec_id = db.execute("SELECT id FROM users WHERE username = 'tecnico1'").fetchone()[0]
+
+# letture: ogni id della prima azienda risponde «non trovato» alla seconda
+leaks = []
+for path in (f"/clienti/{cid}", f"/clienti/{cid}/modifica", f"/impianti/{pa}", f"/impianti/{pa}/stato.json",
+             f"/ticket/{tid_b}", f"/comandi/{cmd_b}.json"):
+    r = bia.get(BASE + path)
+    if r.status_code == 200 and ("Non trovato" not in r.text and "not found" not in r.text):
+        leaks.append(path)
+lists = "".join(bia.get(BASE + p).text for p in ("/", "/clienti", "/ticket?stato=tutti", "/utenti"))
+if "segreto di B" in lists or "diag rotta" in lists or "tecnico1" in lists or "alert(&#39;cliente" in lists:
+    leaks.append("elenchi")
+check(not leaks, "aziende: la seconda azienda non vede clienti, impianti, ticket, comandi e utenti della prima", ", ".join(leaks))
+
+# scritture: nessuna modifica ai dati della prima azienda
+snap = lambda: db.execute("SELECT (SELECT group_concat(name || revoked || COALESCE(pair_code, '')) FROM plants), "
+                          "(SELECT COUNT(*) FROM commands), (SELECT COUNT(*) FROM ticket_messages), "
+                          "(SELECT group_concat(status) FROM tickets), (SELECT group_concat(password_hash || active) FROM users WHERE company_id = 1), "
+                          "(SELECT COUNT(*) FROM clients), (SELECT COUNT(*) FROM plants)").fetchone()
+before = snap()
+for path, data in ((f"/impianti/{pa}/nome", {"name": "preso"}), (f"/impianti/{pa}/revoca", {}), (f"/impianti/{pa}/codice", {}),
+                   (f"/impianti/{pa}/comandi", {"name": "ping"}), (f"/impianti/{pa}/amministratore", {"op": "richiedi"}),
+                   (f"/impianti/{pa}/ha-url", {"ha_url_manual": "https://evil.example"}),
+                   (f"/impianti/{pa}/elimina", {"confirm_name": pname_a}), (f"/clienti/{cid}/elimina", {"confirm_name": cname_a}),
+                   (f"/clienti/{cid}/impianti", {"name": "intruso"}), (f"/clienti/{cid}/modifica", {"name": "preso"}),
+                   (f"/ticket/{tid_b}/rispondi", {"text": "intruso", "status": "chiuso"}),
+                   (f"/utenti/{tec_id}/password", {"password": "passwordrubata1"}), (f"/utenti/{tec_id}/attiva", {})):
+    form_post(bia, path, "/", data)
+check(snap() == before, "aziende: la seconda azienda non può modificare, eliminare o comandare nulla della prima")
+
+# la seconda azienda ha il suo cliente, impianto e ticket: niente assegnazioni a utenti di altre aziende
+r = form_post(bia, "/clienti/nuovo", "/clienti/nuovo", {"name": "Cliente riservato Bianchi"})
+cid_x = int(re.search(r"/clienti/(\d+)", r.url).group(1))
+r = form_post(bia, f"/clienti/{cid_x}/impianti", f"/clienti/{cid_x}", {"name": "X"})
+code_x = re.search(r'class="code">([A-Z0-9-]{9})<', r.text).group(1)
+paired = requests.post(BASE + "/api/agent/pair", json={"code": code_x, "ha_version": "2026.10.1", "agent_version": "0.1.8"}).json()
+check(paired.get("server_name") == "Bianchi Elettrica" and paired.get("brand_color") == "#aa0000",
+      "aziende: l'impianto della seconda azienda riceve il suo nome e il suo colore")
+tid_x = requests.post(BASE + "/api/agent/tickets", headers=agent_headers(paired["token"]), json={"title": "guasto X"}).json()["ticket_id"]
+form_post(bia, f"/ticket/{tid_x}/rispondi", f"/ticket/{tid_x}", {"text": "", "assigned_to": str(tec_id)})
+check(db.execute("SELECT assigned_to FROM tickets WHERE id = ?", (tid_x,)).fetchone()[0] is None,
+      "aziende: un ticket non si assegna a un utente di un'altra azienda")
+check("guasto X" not in admin.get(BASE + "/ticket?stato=tutti").text and "Cliente riservato Bianchi" not in admin.get(BASE + "/clienti").text,
+      "aziende: anche la prima azienda (del gestore) non vede i dati della seconda")
+page = admin.get(BASE + "/aziende").text
+check("Bianchi Elettrica" in page and "Cliente riservato Bianchi" not in page and "guasto X" not in page,
+      "aziende: il gestore vede le aziende e i loro numeri, non i clienti né i ticket")
+
+# solo il gestore: elenco delle aziende, indirizzo pubblico e aggiornamenti del server
+check(refused(bia, "/aziende", "/", {"name": "Terza", "username": "terzo", "password": "passwordlunga1"}),
+      "aziende: l'amministratore di un'azienda non può crearne altre")
+form_post(bia, "/impostazioni", "/impostazioni", {"company_name": "Bianchi Elettrica", "public_url": "https://evil.example"})
+st = bia.get(BASE + "/impostazioni").text
+check(db.execute("SELECT value FROM settings WHERE key = 'public_url'").fetchone() in (None, ("",))
+      and 'id="aggiornamenti"' not in st and 'name="public_url"' not in st,
+      "aziende: indirizzo pubblico e aggiornamenti del server restano al gestore")
+form_post(bia, "/impostazioni/telegram", "/impostazioni", {"telegram_token": "777:BIANCHI", "telegram_chat_id": "42", "azione": "salva"})
+check(db.execute("SELECT COUNT(*) FROM company_settings WHERE value = '777:BIANCHI' AND company_id != "
+                 "(SELECT company_id FROM users WHERE username = 'bianchi')").fetchone()[0] == 0
+      and "777:BIANCHI" not in admin.get(BASE + "/impostazioni").text,
+      "aziende: il bot Telegram di un'azienda resta suo")
+
+# un altro amministratore dell'azienda del gestore non può prenderne il posto
+form_post(admin, "/utenti", "/utenti", {"username": "admin2", "full_name": "Secondo", "password": "passwordadmin2", "role": "admin"})
+adm2, _ = login("admin2", "passwordadmin2")
+hash_before = db.execute("SELECT password_hash FROM users WHERE id = ?", (mario_id,)).fetchone()[0]
+form_post(adm2, f"/utenti/{mario_id}/password", "/utenti", {"password": "passwordrubata1"})
+form_post(adm2, f"/utenti/{mario_id}/attiva", "/utenti", {})
+check(db.execute("SELECT password_hash, active FROM users WHERE id = ?", (mario_id,)).fetchone() == (hash_before, 1)
+      and "Aziende" not in adm2.get(BASE + "/").text.split("<main>")[0],
+      "aziende: un altro amministratore non può cambiare password o disattivare il gestore, né vedere le aziende")
 
 # ---------------------------------------------------------------- intestazioni HTTP
 h = admin.get(BASE + "/").headers
