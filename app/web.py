@@ -224,6 +224,8 @@ def render(request, name, **ctx):
     co = db.company(user["company_id"]) if user and user.get("company_id") else None
     ctx.update(
         server_update=updates.server_update(),
+        mail_problem=(db.get_setting("mail_error") or None) if user and can(user, "server")
+        and accounts.smtp_configured() else None,
         request=request,
         user=user,
         csrf=csrf_token(request),
@@ -1004,6 +1006,10 @@ def _mail_settings():
     m["enabled"] = db.get_setting("email_reset", "0") == "1"
     m["sender_name"] = db.get_setting("email_sender_name", "")
     m["security_options"] = accounts.SMTP_SECURITY
+    st = accounts.mail_status()
+    for k in ("check_at", "sent_at", "keepalive_due"):
+        st[k] = datetime.fromtimestamp(st[k], timezone.utc) if st[k] else None
+    m["status"] = st
     return m
 
 
@@ -1015,6 +1021,11 @@ async def email_settings(request: Request):
     if action == "disattiva":
         db.set_setting("email_reset", "0")
         return redirect("/impostazioni#email", "Recupero della password via email disattivato.", request)
+    if action == "controlla":
+        error = await asyncio.to_thread(accounts.maintain, True)
+        if error:
+            return redirect("/impostazioni#email", f"Posta non funzionante: {error}", request, error=True)
+        return redirect("/impostazioni#email", "Controllo riuscito: il server di posta risponde e accetta le credenziali.", request)
     port = form.get("smtp_port", "").strip()
     if port and (not port.isdigit() or not 1 <= int(port) <= 65535):
         return redirect("/impostazioni#email", "Porta SMTP non valida.", request, error=True)
@@ -1030,6 +1041,8 @@ async def email_settings(request: Request):
     db.set_setting("email_sender_name", " ".join(form.get("email_sender_name", "").split())[:80])
     if form.get("smtp_password"):
         db.set_setting("smtp_password", form.get("smtp_password"))
+    db.set_setting("mail_error", "")   # impostazioni cambiate: il prossimo controllo dirà se ora funziona
+    db.set_setting("mail_alerted", "0")
     enable = form.get("email_reset") == "1"
     if enable and not (db.get_setting("smtp_host") and sender):
         return redirect("/impostazioni#email", "Per attivarlo servono almeno server SMTP e mittente.", request, error=True)

@@ -57,7 +57,7 @@
   <form method="post" action="/impostazioni/email"><input type="hidden" name="csrf" value="{{ csrf }}">
     <button name="azione" value="salva" tabindex="-1" aria-hidden="true" style="position:absolute;left:-9999px"></button>
     <label class="check"><input type="checkbox" name="email_reset" value="1" {{ 'checked' if mail.enabled }}> Attiva «Password dimenticata?» via email</label>
-    <label for="smtp_host">Server SMTP</label><input id="smtp_host" name="smtp_host" value="{{ mail.smtp_host }}" placeholder="es. smtp.gmail.com">
+    <label for="smtp_host">Server SMTP</label><input id="smtp_host" name="smtp_host" value="{{ mail.smtp_host }}" placeholder="es. smtp.tuoservizio.it">
     <div class="row">
       <div><label for="smtp_security">Sicurezza</label><select id="smtp_security" name="smtp_security">
         {% for k, label in mail.security_options.items() %}<option value="{{ k }}" {{ 'selected' if (mail.smtp_security or 'starttls') == k }}>{{ label }}</option>{% endfor %}</select></div>
@@ -66,12 +66,24 @@
     <label for="smtp_user">Utente SMTP</label><input id="smtp_user" name="smtp_user" value="{{ mail.smtp_user }}" autocomplete="off">
     <label for="smtp_password">Password SMTP</label>
     <input id="smtp_password" name="smtp_password" type="password" autocomplete="new-password"
-           placeholder="{{ 'impostata — lascia vuoto per non cambiarla' if mail.password_set else 'per Gmail: una «password per le app»' }}">
-    <label for="smtp_from">Mittente (email)</label><input id="smtp_from" name="smtp_from" value="{{ mail.smtp_from }}" placeholder="es. info.nexohm@gmail.com">
+           placeholder="{{ 'impostata — lascia vuoto per non cambiarla' if mail.password_set else 'password o chiave SMTP del servizio' }}">
+    <label for="smtp_from">Mittente (email)</label><input id="smtp_from" name="smtp_from" value="{{ mail.smtp_from }}" placeholder="es. noreply@tuodominio.it">
     <label for="email_sender_name">Nome del mittente</label><input id="email_sender_name" name="email_sender_name" value="{{ mail.sender_name }}" placeholder="Assistenza impianti">
+    {% set st = mail.status %}
+    {% if st.configured %}
+    <dl class="kv" style="margin-top:16px">
+      <dt>Ultimo controllo</dt><dd>{{ st.check_at | ago }}{% if st.error %} — <span class="tag-update">{{ st.error }}</span>{% elif st.check_at %} — <span class="muted small">funziona</span>{% endif %}</dd>
+      <dt>Ultimo invio riuscito</dt><dd>{{ st.sent_at | ago }}</dd>
+      <dt>Email di controllo</dt><dd>{% if st.manager_email %}ogni {{ st.keepalive_days }} giorni a {{ st.manager_email }}{% if st.keepalive_due %}, la prossima entro il {{ st.keepalive_due | ts }}{% endif %}{% else %}<span class="tag-update">aggiungi la tua email in «Il mio account»</span>{% endif %}</dd>
+    </dl>
+    {% endif %}
+    <p class="muted small">Il server controlla ogni giorno che l'accesso funzioni e ogni {{ mail.status.keepalive_days }} giorni ti manda
+      un'email di controllo: così la chiave del servizio non resta mai inutilizzata (Brevo, per esempio, la disattiva dopo 90 giorni
+      senza invii) e, se qualcosa smette di funzionare, te ne accorgi subito da un avviso qui in dashboard e su Telegram.</p>
     <div class="row" style="margin-top:16px">
       <button class="btn" name="azione" value="salva">Salva</button>
       <button class="btn ghost" name="azione" value="prova">Invia prova{% if user.email %} a {{ user.email }}{% endif %}</button>
+      {% if mail.status.configured %}<button class="btn ghost" name="azione" value="controlla">Controlla adesso</button>{% endif %}
       {% if mail.enabled %}<button class="btn danger" name="azione" value="disattiva">Disattiva</button>{% endif %}
     </div>
   </form>

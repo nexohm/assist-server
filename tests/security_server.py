@@ -483,6 +483,21 @@ time.sleep(1)
 check(len(mails) - n_before <= 3, "email: niente valanga di messaggi allo stesso utente", f"{len(mails) - n_before} email")
 bia, _ = login("bianchi", "nuovabianchi1")
 
+# controllo periodico della posta: email di controllo al gestore, avviso se smette di funzionare
+db.execute("UPDATE users SET email = 'gestore@example.com' WHERE id = ?", (mario_id,))
+db.execute("UPDATE settings SET value = ? WHERE key = 'mail_sent_at'", (str(time.time() - 31 * 86400),)); db.commit()
+n_before = len(mails)
+form_post(admin, "/impostazioni/email", "/impostazioni", {"azione": "controlla"})
+check(any("gestore@example.com" in m and "Controllo mensile" in m for m in mails[n_before:]),
+      "posta: dopo 30 giorni senza invii parte l'email di controllo al gestore (la chiave del servizio resta attiva)")
+db.execute("UPDATE settings SET value = '1' WHERE key = 'smtp_port'"); db.commit()
+r = form_post(admin, "/impostazioni/email", "/impostazioni", {"azione": "controlla"})
+check("La posta del server non funziona" in admin.get(BASE + "/").text and "posta del server" not in bia.get(BASE + "/").text,
+      "posta: se l'accesso smette di funzionare il gestore (e solo lui) vede l'avviso")
+db.execute("UPDATE settings SET value = ? WHERE key = 'smtp_port'", (str(smtp_port),)); db.commit()
+form_post(admin, "/impostazioni/email", "/impostazioni", {"azione": "controlla"})
+check("La posta del server non funziona" not in admin.get(BASE + "/").text, "posta: sistemato il problema, l'avviso sparisce")
+
 # ---------------------------------------------------------------- limiti
 plants_of = lambda: db.execute("SELECT COUNT(*) FROM plants p JOIN clients c ON c.id = p.client_id WHERE c.company_id = ?",
                                (bia_co,)).fetchone()[0]

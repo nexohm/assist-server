@@ -35,6 +35,10 @@
     · <a href="https://github.com/nexohm/assist-server/releases/tag/v{{ server_update }}" target="_blank" rel="noopener">novità</a>
   </div>
   {% endif %}
+  {% if mail_problem %}
+  <div class="update"><b>La posta del server non funziona:</b> {{ mail_problem }}.
+    Il recupero della password via email è fermo finché non lo sistemi · <a href="/impostazioni#email">Impostazioni</a></div>
+  {% endif %}
   {% if flash %}
   <div class="toast {{ 'err' if flash.error else 'ok' }}" role="{{ 'alert' if flash.error else 'status' }}" aria-live="polite">
     <svg class="toast-icon" viewBox="0 0 52 52" width="34" height="34" fill="none" aria-hidden="true">

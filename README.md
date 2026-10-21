@@ -63,6 +63,9 @@ ogni cliente ha un **add-on agente** sul proprio Home Assistant. Il cliente non 
   (per gli amministratori delle aziende) o dal server con `sudo ha-suite password <utente>`; a scelta del gestore anche
   «Password dimenticata?» via email (SMTP). Le password iniziali date da altri vanno cambiate al primo accesso, e cambiando
   password le altre sessioni aperte si chiudono
+- **controllo della posta**: se l'SMTP è configurato, il server verifica ogni giorno l'accesso e ogni 30 giorni
+  manda un'email di controllo al gestore, così le chiavi dei servizi che scadono se inutilizzate (es. Brevo dopo
+  90 giorni) restano attive; se qualcosa smette di funzionare, avviso in dashboard e su Telegram
 
 **Agente (add-on)**
 - nessuna dipendenza esterna: solo Python standard
