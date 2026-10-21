@@ -17,6 +17,7 @@ from starlette.templating import Jinja2Templates
 
 from . import db, notify, sanitize, secrets_store, updates
 from .agent_api import is_online, ring
+from . import accounts
 from .security import (ROLE_LABELS, ROLES, can, hash_password, new_pair_code, new_setup_code,
                        verify_password, DUMMY_HASH)
 
@@ -87,13 +88,34 @@ templates.env.globals.update(agent_outdated=updates.agent_outdated, latest_agent
                              is_online=is_online, asset=asset)
 
 
+def pw_mark(user):
+    """Impronta della password nella sessione: cambiata la password (anche con un link di
+    recupero), le sessioni aperte altrove smettono di valere."""
+    return hashlib.sha256(user["password_hash"].encode()).hexdigest()[:16]
+
+
 def current_user(request: Request):
     uid = request.session.get("uid")
-    return db.one("SELECT * FROM users WHERE id = ? AND active = 1", uid) if uid else None
+    if not uid:
+        return None
+    user = db.one("SELECT u.*, co.suspended_at AS company_suspended FROM users u "
+                  "LEFT JOIN companies co ON co.id = u.company_id WHERE u.id = ? AND u.active = 1", uid)
+    if not user or user["company_suspended"]:
+        return None  # azienda sospesa: fuori anche chi era già collegato
+    mark = request.session.get("pw")
+    if mark is None:
+        request.session["pw"] = pw_mark(user)  # sessione aperta con una versione precedente
+    elif not secrets.compare_digest(mark, pw_mark(user)):
+        return None
+    return user
 
 
 SERVER_TITLE = "Assistenza impianti"   # login e primo avvio: nessuna azienda ancora scelta
 DEFAULT_COLOR = "#0f766e"
+
+
+def valid_email(value):
+    return isinstance(value, str) and len(value) <= 200 and re.fullmatch(r"[^@\s<>\"']+@[^@\s<>\"']+\.[^@\s<>\"']+", value) is not None
 
 
 def valid_color(value):
@@ -206,6 +228,7 @@ def render(request, name, **ctx):
         user=user,
         csrf=csrf_token(request),
         company=co["name"] if co else SERVER_TITLE,
+        usage=usage(co["id"]) if co else {},
         brand_color=co["brand_color"] if co else DEFAULT_COLOR,
         public_url=public_url(request),
         flash=take_flash(request, ctx),
@@ -259,6 +282,10 @@ OWNERSHIP = {
 
 def owns(user, params):
     for key, value in params.items():
+        if key == "co":  # azienda: solo il gestore del server agisce sulle aziende
+            if not can(user, "companies") or not db.company(value):
+                return False
+            continue
         sql = OWNERSHIP.get(key)
         if sql is None:
             raise RuntimeError(f"parametro {key} senza controllo dell'azienda")  # nuovo indirizzo da aggiungere qui
@@ -287,6 +314,8 @@ def guard(permission="view"):
                 if request.url.path.endswith(".json"):
                     return JSONResponse({"error": "not found"}, status_code=404)
                 return render(request, "error.html", message="Non trovato.")
+            if user["must_change"] and request.url.path != "/account":
+                return redirect("/account", "Prima di continuare scegli una password nuova, che conosci solo tu.", request)
             request.state.form = form
             request.state.user = user
             return await handler(request)
@@ -355,25 +384,88 @@ async def login(request: Request):
             or any(ord(ch) < 32 for ch in next_url)):
         next_url = "/"
     if request.method == "GET":
-        return render(request, "login.html", error=None, next=next_url)
+        return render(request, "login.html", error=None, next=next_url, email_reset=accounts.email_enabled())
     form = await read_form(request)
     if form is None:
         return redirect("/login")
     ip = client_ip(request)
     username = form.get("username", "").strip().lower()[:100]
     if too_many_attempts(ip, username):
-        return render(request, "login.html", error="Troppi tentativi falliti. Riprova tra 15 minuti.", next=next_url)
-    user = db.one("SELECT * FROM users WHERE username = ? AND active = 1", username)
+        return render(request, "login.html", error="Troppi tentativi falliti. Riprova tra 15 minuti.", next=next_url,
+                      email_reset=accounts.email_enabled())
+    user = db.one("SELECT u.*, co.suspended_at AS company_suspended FROM users u "
+                  "LEFT JOIN companies co ON co.id = u.company_id WHERE u.username = ? AND u.active = 1", username)
     # Anche per un utente inesistente si calcola un hash: il tempo di risposta non rivela chi esiste.
     valid = verify_password(form.get("password", ""), user["password_hash"] if user else DUMMY_HASH)
     if not user or not valid:
         record_failure(ip, username)
-        return render(request, "login.html", error="Nome utente o password errati.", next=next_url)
+        return render(request, "login.html", error="Nome utente o password errati.", next=next_url,
+                      email_reset=accounts.email_enabled())
     _failures.pop(f"ip:{ip}", None)
     _failures.pop(f"user:{username}", None)
+    if user["company_suspended"]:
+        return render(request, "login.html", error="L'accesso della tua azienda è sospeso: contatta il gestore del server.",
+                      next=next_url)
     request.session.clear()
     request.session["uid"] = user["id"]
+    request.session["pw"] = pw_mark(user)
+    if user["must_change"]:
+        return redirect("/account", "Prima di continuare scegli una password nuova, che conosci solo tu.", request)
     return redirect(next_url)
+
+
+# ---------- recupero della password ----------
+
+RESET_REQUESTS_PER_IP = 5
+
+
+async def reset_request(request: Request):
+    """«Password dimenticata?»: solo se il gestore ha attivato l'email. La risposta è sempre la stessa,
+    così non si scopre quali utenti esistono."""
+    if not accounts.email_enabled():
+        return render(request, "reset.html", mode="off")
+    if request.method == "GET":
+        return render(request, "reset.html", mode="ask")
+    form = await read_form(request)
+    if form is None:
+        return redirect("/recupero")
+    ip = client_ip(request)
+    if len(_recent(f"reset:{ip}")) >= RESET_REQUESTS_PER_IP:
+        return render(request, "reset.html", mode="ask", errors=["Troppe richieste. Riprova tra 15 minuti."])
+    _failures[f"reset:{ip}"].append(time.time())
+    who = form.get("who", "").strip().lower()[:200]
+    if who:
+        user = db.one("SELECT u.* FROM users u LEFT JOIN companies co ON co.id = u.company_id "
+                      "WHERE (u.username = ? OR lower(u.email) = ?) AND u.active = 1 AND u.email IS NOT NULL "
+                      "AND co.suspended_at IS NULL ORDER BY u.id LIMIT 1", who, who)
+        if user and len(_recent(f"resetuser:{user['id']}")) < 3:   # niente valanga di email allo stesso utente
+            _failures[f"resetuser:{user['id']}"].append(time.time())
+            accounts.send_reset_email(user, public_url(request))
+    return render(request, "reset.html", mode="sent")
+
+
+async def reset_use(request: Request):
+    token = request.path_params["token"]
+    user = accounts.find_reset(token)
+    if not user:
+        return render(request, "reset.html", mode="invalid")
+    if request.method == "GET":
+        return render(request, "reset.html", mode="new", target=user, token=token, errors=[])
+    form = await read_form(request)
+    if form is None:
+        return redirect(f"/recupero/{token}")
+    new, new2 = form.get("password", ""), form.get("password2", "")
+    errors = []
+    if len(new) < MIN_PASSWORD:
+        errors.append(f"La password deve avere almeno {MIN_PASSWORD} caratteri.")
+    if new != new2:
+        errors.append("Le due password non coincidono.")
+    if errors:
+        return render(request, "reset.html", mode="new", target=user, token=token, errors=errors)
+    if not accounts.use_reset(token, new):
+        return render(request, "reset.html", mode="invalid")
+    request.session.clear()
+    return redirect("/login", "Password impostata: ora accedi con quella nuova.", request)
 
 
 async def logout(request: Request):
@@ -462,8 +554,15 @@ async def client_new(request: Request):
     data = {f: form.get(f, "").strip() for f in CLIENT_FIELDS}
     if not data["name"]:
         return render(request, "client_form.html", client=data, errors=["Il nome è obbligatorio."])
-    cid = db.run("INSERT INTO clients(name, email, phone, address, notes, company_id, created_at) "
-                 "VALUES(?, ?, ?, ?, ?, ?, ?)", *[data[f] for f in CLIENT_FIELDS], request.state.user["company_id"], db.now())
+    co = request.state.user["company_id"]
+    # controllo del limite e inserimento nella stessa istruzione: due richieste insieme non lo superano
+    with db.connect() as c:
+        cur = c.execute("INSERT INTO clients(name, email, phone, address, notes, company_id, created_at) "
+                        "SELECT ?, ?, ?, ?, ?, ?, ? WHERE " + LIMIT_CLIENTS,
+                        (*[data[f] for f in CLIENT_FIELDS], co, db.now(), co, co, co))
+        cid = cur.lastrowid if cur.rowcount else None
+    if not cid:
+        return render(request, "client_form.html", client=data, errors=[LIMIT_MSG["clients"].format(**usage(co))])
     return redirect(f"/clienti/{cid}", "Cliente creato.", request)
 
 
@@ -518,6 +617,29 @@ async def client_delete(request: Request):
 
 # ---------- impianti ----------
 
+# Limiti decisi dal gestore per azienda (NULL = nessun limite). Contano tutti gli impianti
+# inseriti, anche non abbinati o revocati.
+LIMIT_CLIENTS = ("((SELECT max_clients FROM companies WHERE id = ?) IS NULL OR "
+                 "(SELECT COUNT(*) FROM clients WHERE company_id = ?) < (SELECT max_clients FROM companies WHERE id = ?))")
+LIMIT_PLANTS = ("((SELECT max_plants FROM companies WHERE id = ?) IS NULL OR "
+                "(SELECT COUNT(*) FROM plants p JOIN clients c ON c.id = p.client_id WHERE c.company_id = ?) "
+                "< (SELECT max_plants FROM companies WHERE id = ?))")
+LIMIT_MSG = {"clients": "Hai raggiunto il limite di {max_clients} clienti previsto per la tua azienda: "
+                        "per aggiungerne altri chiedi al gestore del server di alzarlo.",
+             "plants": "Hai raggiunto il limite di {max_plants} impianti previsto per la tua azienda: "
+                       "per aggiungerne altri elimina un impianto o chiedi al gestore di alzare il limite."}
+
+
+def usage(company_id):
+    """Clienti e impianti dell'azienda rispetto ai limiti (per pagine e messaggi)."""
+    u = db.one("SELECT co.max_clients, co.max_plants, "
+               "(SELECT COUNT(*) FROM clients WHERE company_id = co.id) AS clients, "
+               "(SELECT COUNT(*) FROM plants p JOIN clients c ON c.id = p.client_id WHERE c.company_id = co.id) AS plants "
+               "FROM companies co WHERE co.id = ?", company_id) or {}
+    u["clients_full"] = bool(u.get("max_clients")) and u["clients"] >= u["max_clients"]
+    u["plants_full"] = bool(u.get("max_plants")) and u["plants"] >= u["max_plants"]
+    return u
+
 def _issue_pair_code(plant_id):
     code = new_pair_code()
     expires = (datetime.now(timezone.utc) + timedelta(hours=24)).isoformat(timespec="seconds")
@@ -531,7 +653,13 @@ async def plant_new(request: Request):
     if not db.one("SELECT id FROM clients WHERE id = ?", cid):
         return render(request, "error.html", message="Cliente non trovato.")
     name = request.state.form.get("name", "").strip() or "Impianto principale"
-    pid = db.run("INSERT INTO plants(client_id, name, created_at) VALUES(?, ?, ?)", cid, name, db.now())
+    co = request.state.user["company_id"]
+    with db.connect() as c:
+        cur = c.execute("INSERT INTO plants(client_id, name, created_at) SELECT ?, ?, ? WHERE " + LIMIT_PLANTS,
+                        (cid, name, db.now(), co, co, co))
+        pid = cur.lastrowid if cur.rowcount else None
+    if not pid:
+        return redirect(f"/clienti/{cid}", LIMIT_MSG["plants"].format(**usage(co)), request, error=True)
     _issue_pair_code(pid)
     return redirect(f"/impianti/{pid}", "Impianto creato. Inserisci il codice di abbinamento nell'add-on.", request)
 
@@ -760,16 +888,25 @@ async def users_page(request: Request):
             errors.append("La password deve avere almeno 10 caratteri.")
         if role not in ROLES:
             errors.append("Ruolo non valido.")
+        email = form.get("email", "").strip()
+        if email and not valid_email(email):
+            errors.append("Indirizzo email non valido.")
         # i nomi utente sono unici su tutto il server: il login è uno solo per tutte le aziende
         if db.one("SELECT id FROM users WHERE username = ?", username):
             errors.append("Nome utente già in uso (anche da un'altra azienda dello stesso server): scegline un altro.")
         if not errors:
-            db.run("INSERT INTO users(username, full_name, password_hash, role, company_id, created_at) VALUES(?, ?, ?, ?, ?, ?)",
-                   username, form.get("full_name", "").strip(), hash_password(password), role,
-                   request.state.user["company_id"], db.now())
-            return redirect("/utenti", "Utente creato.", request)
+            # password iniziale scelta da altri: al primo accesso va cambiata
+            db.run("INSERT INTO users(username, full_name, email, password_hash, role, company_id, must_change, created_at) "
+                   "VALUES(?, ?, ?, ?, ?, ?, 1, ?)", username, form.get("full_name", "").strip(), email or None,
+                   hash_password(password), role, request.state.user["company_id"], db.now())
+            return redirect("/utenti", "Utente creato: al primo accesso dovrà scegliere una password sua.", request)
+    return _users_render(request, errors)
+
+
+def _users_render(request, errors=None, reset=None):
     users = db.all_("SELECT * FROM users WHERE company_id = ? ORDER BY active DESC, username", request.state.user["company_id"])
-    return render(request, "users.html", users=users, errors=errors)
+    return render(request, "users.html", users=users, errors=errors or [], reset=reset,
+                  reset_minutes=accounts.RESET_MINUTES)
 
 
 MIN_PASSWORD = 10
@@ -783,7 +920,11 @@ async def account_page(request: Request):
     if request.method == "POST":
         form = request.state.form
         if form.get("azione") == "profilo":
-            db.run("UPDATE users SET full_name = ? WHERE id = ?", form.get("full_name", "").strip(), user["id"])
+            email = form.get("email", "").strip()
+            if email and not valid_email(email):
+                return redirect("/account", "Indirizzo email non valido.", request, error=True)
+            db.run("UPDATE users SET full_name = ?, email = ? WHERE id = ?", form.get("full_name", "").strip(),
+                   email or None, user["id"])
             return redirect("/account", "Profilo aggiornato.", request)
         current, new, new2 = form.get("current", ""), form.get("password", ""), form.get("password2", "")
         if not verify_password(current, user["password_hash"]):
@@ -795,26 +936,27 @@ async def account_page(request: Request):
         if new and new == current:
             errors.append("La nuova password deve essere diversa da quella attuale.")
         if not errors:
-            db.run("UPDATE users SET password_hash = ? WHERE id = ?", hash_password(new), user["id"])
-            return redirect("/account", "Password cambiata.", request)
+            db.run("UPDATE users SET password_hash = ?, must_change = 0 WHERE id = ?", hash_password(new), user["id"])
+            request.session["pw"] = pw_mark(db.one("SELECT password_hash FROM users WHERE id = ?", user["id"]))
+            return redirect("/", "Password cambiata.", request) if user["must_change"] else \
+                redirect("/account", "Password cambiata.", request)
     return render(request, "account.html", errors=errors)
 
 
 @guard("users")
-async def user_password(request: Request):
-    """L'amministratore reimposta la password di un altro utente (es. password dimenticata)."""
+async def user_reset_link(request: Request):
+    """L'amministratore crea un link di recupero per un suo utente: la nuova password la sceglie l'utente."""
     uid = request.path_params["uid"]
     target = db.one("SELECT * FROM users WHERE id = ?", uid)
-    new = request.state.form.get("password", "")
-    if not target:
-        return redirect("/utenti", "Utente non trovato.", request, error=True)
+    if not target or not target["active"]:
+        return redirect("/utenti", "Utente non trovato o disattivato.", request, error=True)
     if target["is_manager"]:
         # un altro amministratore dell'azienda non deve poter prendere il posto del gestore del server
-        return redirect("/utenti", "La password del gestore la cambia solo lui, da «Il mio account».", request, error=True)
-    if len(new) < MIN_PASSWORD:
-        return redirect("/utenti", f"La password deve avere almeno {MIN_PASSWORD} caratteri.", request, error=True)
-    db.run("UPDATE users SET password_hash = ? WHERE id = ?", hash_password(new), uid)
-    return redirect("/utenti", f"Password di {target['username']} reimpostata: comunicagliela e chiedigli di cambiarla.", request)
+        return redirect("/utenti", "Il gestore recupera la password solo dal server: sudo ha-suite password " +
+                        target["username"], request, error=True)
+    token = accounts.create_reset(target["id"], request.state.user["username"])
+    log.info("Link di recupero per %s creato da %s", target["username"], request.state.user["username"])
+    return _users_render(request, reset={"username": target["username"], "url": accounts.reset_url(token, public_url(request))})
 
 
 @guard("users")
@@ -852,7 +994,58 @@ async def settings_page(request: Request):
                   tg_token_set=bool(db.get_csetting(co, "telegram_token")),
                   tg_chat_id=db.get_csetting(co, "telegram_chat_id", ""),
                   tg_events={k: (label, db.get_csetting(co, k, "1") == "1") for k, label in notify.EVENTS.items()},
-                  upd=_update_status(co) if can(user, "server") else None)
+                  upd=_update_status(co) if can(user, "server") else None,
+                  mail=_mail_settings() if can(user, "server") else None)
+
+
+def _mail_settings():
+    m = accounts.smtp_settings()
+    m["password_set"] = bool(m.pop("smtp_password"))
+    m["enabled"] = db.get_setting("email_reset", "0") == "1"
+    m["sender_name"] = db.get_setting("email_sender_name", "")
+    m["security_options"] = accounts.SMTP_SECURITY
+    return m
+
+
+@guard("server")
+async def email_settings(request: Request):
+    """Il gestore sceglie se attivare «Password dimenticata?» via email e configura il server SMTP."""
+    form, user = request.state.form, request.state.user
+    action = form.get("azione", "salva")
+    if action == "disattiva":
+        db.set_setting("email_reset", "0")
+        return redirect("/impostazioni#email", "Recupero della password via email disattivato.", request)
+    port = form.get("smtp_port", "").strip()
+    if port and (not port.isdigit() or not 1 <= int(port) <= 65535):
+        return redirect("/impostazioni#email", "Porta SMTP non valida.", request, error=True)
+    sender = form.get("smtp_from", "").strip()
+    if sender and not valid_email(sender):
+        return redirect("/impostazioni#email", "Indirizzo del mittente non valido.", request, error=True)
+    security = form.get("smtp_security", "starttls")
+    db.set_setting("smtp_host", form.get("smtp_host", "").strip()[:200])
+    db.set_setting("smtp_port", port)
+    db.set_setting("smtp_security", security if security in accounts.SMTP_SECURITY else "starttls")
+    db.set_setting("smtp_user", form.get("smtp_user", "").strip()[:200])
+    db.set_setting("smtp_from", sender)
+    db.set_setting("email_sender_name", " ".join(form.get("email_sender_name", "").split())[:80])
+    if form.get("smtp_password"):
+        db.set_setting("smtp_password", form.get("smtp_password"))
+    enable = form.get("email_reset") == "1"
+    if enable and not (db.get_setting("smtp_host") and sender):
+        return redirect("/impostazioni#email", "Per attivarlo servono almeno server SMTP e mittente.", request, error=True)
+    db.set_setting("email_reset", "1" if enable else "0")
+    if action == "prova":
+        if not user.get("email"):
+            return redirect("/impostazioni#email", "Inserisci prima la tua email in «Il mio account»: la prova arriva lì.",
+                            request, error=True)
+        try:
+            await asyncio.to_thread(accounts.send_mail, user["email"], "Prova del server di assistenza",
+                                    "Se leggi questo messaggio, l'invio delle email di recupero della password funziona.")
+        except RuntimeError as e:
+            return redirect("/impostazioni#email", f"Email non inviata: {e}", request, error=True)
+        return redirect("/impostazioni#email", f"Email di prova inviata a {user['email']}.", request)
+    return redirect("/impostazioni#email", "Impostazioni email salvate." + (" «Password dimenticata?» ora compare nella pagina di accesso."
+                                                                             if enable else ""), request)
 
 
 def _update_status(company_id):
@@ -925,7 +1118,8 @@ async def companies_page(request: Request):
     errors, form_data = [], {}
     if request.method == "POST":
         form = request.state.form
-        form_data = {k: form.get(k, "") for k in ("name", "brand_color", "full_name", "username")}
+        form_data = {k: form.get(k, "") for k in ("name", "brand_color", "full_name", "username", "email",
+                                                  "max_clients", "max_plants")}
         name = " ".join(form.get("name", "").split())[:80]
         username = form.get("username", "").strip().lower()
         password = form.get("password", "")
@@ -939,25 +1133,129 @@ async def companies_page(request: Request):
             errors.append("Nome utente già in uso: scegline un altro.")
         if len(password) < MIN_PASSWORD:
             errors.append(f"La password iniziale deve avere almeno {MIN_PASSWORD} caratteri.")
+        email = form.get("email", "").strip()
+        if email and not valid_email(email):
+            errors.append("Indirizzo email non valido.")
+        limits = {}
+        for key, label in (("max_clients", "clienti"), ("max_plants", "impianti")):
+            raw = form.get(key, "").strip()
+            if raw and (not raw.isdigit() or int(raw) < 1 or int(raw) > 100000):
+                errors.append(f"Limite di {label} non valido: un numero da 1 in su, o vuoto per nessun limite.")
+            limits[key] = int(raw) if raw.isdigit() else None
         if not errors:
             color = form.get("brand_color", "")
             with db.connect() as c:
-                co = c.execute("INSERT INTO companies(name, brand_color, created_at) VALUES(?, ?, ?)",
-                               (name, color if valid_color(color) else DEFAULT_COLOR, db.now())).lastrowid
-                c.execute("INSERT INTO users(username, full_name, password_hash, role, company_id, created_at) "
-                          "VALUES(?, ?, ?, 'admin', ?, ?)", (username, form.get("full_name", "").strip(),
-                                                              hash_password(password), co, db.now()))
+                co = c.execute("INSERT INTO companies(name, brand_color, max_clients, max_plants, created_at) "
+                               "VALUES(?, ?, ?, ?, ?)", (name, color if valid_color(color) else DEFAULT_COLOR,
+                                                         limits["max_clients"], limits["max_plants"], db.now())).lastrowid
+                c.execute("INSERT INTO users(username, full_name, email, password_hash, role, company_id, must_change, created_at) "
+                          "VALUES(?, ?, ?, ?, 'admin', ?, 1, ?)", (username, form.get("full_name", "").strip(), email or None,
+                                                                    hash_password(password), co, db.now()))
             log.info("Azienda %s «%s» creata da %s", co, name, request.state.user["username"])
             return redirect("/aziende", f"Azienda «{name}» creata. Comunica a {username} indirizzo, nome utente e "
-                                        "password iniziale: al primo accesso potrà cambiarla da «Il mio account».", request)
+                                        "password iniziale: al primo accesso dovrà sceglierne una sua.", request)
+    return _companies_render(request, errors, form_data)
+
+
+def _companies_render(request, errors=None, form_data=None, reset=None):
     companies = db.all_(
-        "SELECT co.id, co.name, co.brand_color, co.created_at, "
+        "SELECT co.id, co.name, co.brand_color, co.created_at, co.suspended_at, co.max_clients, co.max_plants, "
         "(SELECT COUNT(*) FROM clients c WHERE c.company_id = co.id) AS n_clients, "
         "(SELECT COUNT(*) FROM plants p JOIN clients c ON c.id = p.client_id WHERE c.company_id = co.id) AS n_plants "
         "FROM companies co ORDER BY co.name")
+    for c in companies:
+        # per il link di recupero: solo gli amministratori attivi (nessun altro dato dell'azienda)
+        c["admins"] = db.all_("SELECT id, username, full_name FROM users WHERE company_id = ? AND role = 'admin' "
+                              "AND active = 1 AND is_manager = 0 ORDER BY username", c["id"])
     totals = {"companies": len(companies), "clients": sum(c["n_clients"] for c in companies),
               "plants": sum(c["n_plants"] for c in companies)}
-    return render(request, "companies.html", companies=companies, totals=totals, errors=errors, form=form_data)
+    return render(request, "companies.html", companies=companies, totals=totals, errors=errors or [],
+                  form=form_data or {}, reset=reset, reset_minutes=accounts.RESET_MINUTES)
+
+
+def _company_counts(co):
+    return db.one("SELECT (SELECT COUNT(*) FROM clients WHERE company_id = ?) AS clients, "
+                  "(SELECT COUNT(*) FROM plants p JOIN clients c ON c.id = p.client_id WHERE c.company_id = ?) AS plants",
+                  co, co)
+
+
+@guard("companies")
+async def company_limits(request: Request):
+    co = request.path_params["co"]
+    form, counts = request.state.form, _company_counts(co)
+    values = {}
+    for key, label, used in (("max_clients", "clienti", counts["clients"]), ("max_plants", "impianti", counts["plants"])):
+        raw = form.get(key, "").strip()
+        if not raw:
+            values[key] = None
+            continue
+        if not raw.isdigit() or not 1 <= int(raw) <= 100000:
+            return redirect(f"/aziende#a{co}", f"Limite di {label} non valido: un numero da 1 in su, o vuoto per nessun limite.",
+                            request, error=True)
+        if int(raw) < used:
+            # non si cancella nulla da soli: l'azienda deve prima eliminare quelli in più
+            return redirect(f"/aziende#a{co}", f"L'azienda ha già {used} {label}: per scendere a {raw} deve prima "
+                                                f"eliminarne {used - int(raw)}.", request, error=True)
+        values[key] = int(raw)
+    db.run("UPDATE companies SET max_clients = ?, max_plants = ? WHERE id = ?", values["max_clients"], values["max_plants"], co)
+    return redirect(f"/aziende#a{co}", "Limiti aggiornati.", request)
+
+
+@guard("companies")
+async def company_suspend(request: Request):
+    co = request.path_params["co"]
+    if co == request.state.user["company_id"]:
+        return redirect("/aziende", "Non puoi sospendere la tua azienda.", request, error=True)
+    company = db.company(co)
+    if company["suspended_at"]:
+        db.run("UPDATE companies SET suspended_at = NULL WHERE id = ?", co)
+        # gli agenti si ricollegano entro qualche minuto: niente avvisi «offline» per la pausa appena finita
+        db.run("UPDATE plants SET alert_online = NULL WHERE client_id IN (SELECT id FROM clients WHERE company_id = ?)", co)
+        log.info("Azienda %s «%s» riattivata da %s", co, company["name"], request.state.user["username"])
+        return redirect(f"/aziende#a{co}", f"«{company['name']}» riattivata: i suoi utenti e impianti tornano a funzionare.", request)
+    db.run("UPDATE companies SET suspended_at = ? WHERE id = ?", db.now(), co)
+    for p in db.all_("SELECT p.id FROM plants p JOIN clients c ON c.id = p.client_id WHERE c.company_id = ?", co):
+        secrets_store.drop(p["id"])
+    log.info("Azienda %s «%s» sospesa da %s", co, company["name"], request.state.user["username"])
+    return redirect(f"/aziende#a{co}", f"«{company['name']}» sospesa: i suoi utenti non entrano più e i suoi impianti "
+                                       "sono in pausa (nessun dato perso).", request)
+
+
+@guard("companies")
+async def company_delete(request: Request):
+    co = request.path_params["co"]
+    user, form = request.state.user, request.state.form
+    company = db.company(co)
+    if co == user["company_id"]:
+        return redirect("/aziende", "Non puoi eliminare la tua azienda.", request, error=True)
+    if not _confirmed(form, company["name"]) or not verify_password(form.get("password", ""), user["password_hash"]):
+        return redirect(f"/aziende#a{co}", "Per eliminare l'azienda scrivi il suo nome esatto e la tua password.",
+                        request, error=True)
+    path = await asyncio.to_thread(db.backup, f"prima-di-eliminare-azienda{co}")
+    plants = [p["id"] for p in db.all_("SELECT p.id FROM plants p JOIN clients c ON c.id = p.client_id "
+                                       "WHERE c.company_id = ?", co)]
+    counts = _company_counts(co)
+    db.run("DELETE FROM companies WHERE id = ?", co)  # utenti, clienti, impianti, ticket e comandi a cascata
+    for pid in plants:
+        secrets_store.drop(pid)
+    log.info("Azienda %s «%s» eliminata da %s (%s clienti, %s impianti); copia di sicurezza: %s",
+             co, company["name"], user["username"], counts["clients"], counts["plants"], path)
+    return redirect("/aziende", f"Azienda «{company['name']}» eliminata con {counts['clients']} clienti e "
+                                f"{counts['plants']} impianti. Copia di sicurezza: {os.path.basename(path)}", request)
+
+
+@guard("companies")
+async def company_reset_link(request: Request):
+    co = request.path_params["co"]
+    uid = request.state.form.get("user_id", "")
+    target = db.one("SELECT * FROM users WHERE id = ? AND company_id = ? AND role = 'admin' AND active = 1 AND is_manager = 0",
+                    int(uid) if uid.isdigit() else 0, co)
+    if not target:
+        return redirect(f"/aziende#a{co}", "Scegli un amministratore dell'azienda.", request, error=True)
+    token = accounts.create_reset(target["id"], request.state.user["username"])
+    log.info("Link di recupero per %s (azienda %s) creato dal gestore %s", target["username"], co, request.state.user["username"])
+    return _companies_render(request, reset={"username": target["username"], "company": db.company(co)["name"],
+                                             "url": accounts.reset_url(token, public_url(request))})
 
 
 @guard("edit")
@@ -980,6 +1278,8 @@ routes = [
     Route("/setup", setup, methods=["GET", "POST"]),
     Route("/login", login, methods=["GET", "POST"]),
     Route("/logout", logout, methods=["POST"]),
+    Route("/recupero", reset_request, methods=["GET", "POST"]),
+    Route("/recupero/{token}", reset_use, methods=["GET", "POST"]),
     Route("/", dashboard),
     Route("/clienti", clients_list),
     Route("/clienti/nuovo", client_new, methods=["GET", "POST"]),
@@ -1001,11 +1301,16 @@ routes = [
     Route("/ticket/{tid:int}/rispondi", ticket_reply, methods=["POST"]),
     Route("/utenti", users_page, methods=["GET", "POST"]),
     Route("/utenti/{uid:int}/attiva", user_toggle, methods=["POST"]),
-    Route("/utenti/{uid:int}/password", user_password, methods=["POST"]),
+    Route("/utenti/{uid:int}/recupero", user_reset_link, methods=["POST"]),
     Route("/account", account_page, methods=["GET", "POST"]),
     Route("/aziende", companies_page, methods=["GET", "POST"]),
+    Route("/aziende/{co:int}/limiti", company_limits, methods=["POST"]),
+    Route("/aziende/{co:int}/sospendi", company_suspend, methods=["POST"]),
+    Route("/aziende/{co:int}/elimina", company_delete, methods=["POST"]),
+    Route("/aziende/{co:int}/recupero", company_reset_link, methods=["POST"]),
     Route("/impostazioni", settings_page, methods=["GET", "POST"]),
     Route("/impostazioni/telegram", telegram_settings, methods=["POST"]),
     Route("/impostazioni/aggiornamenti", update_check, methods=["POST"]),
+    Route("/impostazioni/email", email_settings, methods=["POST"]),
     Route("/impianti/{pid:int}/ha-url", plant_ha_url, methods=["POST"]),
 ]

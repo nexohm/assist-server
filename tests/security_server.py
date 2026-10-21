@@ -70,6 +70,8 @@ for user, role in (("tecnico1", "tecnico"), ("lettore1", "lettura")):
 
 
 def login(user, password="passwordtecnico1", headers=None):
+    # utenti di prova: il cambio password del primo accesso è provato a parte (e2e)
+    db.execute("UPDATE users SET must_change = 0 WHERE username = ?", (user,)); db.commit()
     s = requests.Session()
     r = s.post(BASE + "/login", data={"csrf": csrf(s.get(BASE + "/login").text), "username": user, "password": password},
                headers=headers or {}, allow_redirects=False)
@@ -385,11 +387,155 @@ check(db.execute("SELECT COUNT(*) FROM company_settings WHERE value = '777:BIANC
 form_post(admin, "/utenti", "/utenti", {"username": "admin2", "full_name": "Secondo", "password": "passwordadmin2", "role": "admin"})
 adm2, _ = login("admin2", "passwordadmin2")
 hash_before = db.execute("SELECT password_hash FROM users WHERE id = ?", (mario_id,)).fetchone()[0]
-form_post(adm2, f"/utenti/{mario_id}/password", "/utenti", {"password": "passwordrubata1"})
+form_post(adm2, f"/utenti/{mario_id}/recupero", "/utenti", {})
 form_post(adm2, f"/utenti/{mario_id}/attiva", "/utenti", {})
 check(db.execute("SELECT password_hash, active FROM users WHERE id = ?", (mario_id,)).fetchone() == (hash_before, 1)
+      and not db.execute("SELECT 1 FROM password_resets WHERE user_id = ?", (mario_id,)).fetchone()
       and "Aziende" not in adm2.get(BASE + "/").text.split("<main>")[0],
       "aziende: un altro amministratore non può cambiare password o disattivare il gestore, né vedere le aziende")
+
+# ---------------------------------------------------------------- recupero della password
+import socket, socketserver  # noqa: E401,E402
+
+mails = []
+
+
+class FakeSMTP(socketserver.StreamRequestHandler):
+    """Server SMTP minimo per i test: raccoglie i messaggi."""
+    def handle(self):
+        self.wfile.write(b"220 prova\r\n")
+        data = None
+        while True:
+            line = self.rfile.readline()
+            if not line:
+                return
+            if data is not None:
+                if line in (b".\r\n", b".\n"):
+                    mails.append(b"".join(data).decode(errors="replace")); data = None
+                    self.wfile.write(b"250 ok\r\n")
+                else:
+                    data.append(line)
+                continue
+            cmd = line[:4].upper()
+            if cmd in (b"EHLO", b"HELO"):
+                self.wfile.write(b"250 prova\r\n")
+            elif cmd == b"DATA":
+                data = []; self.wfile.write(b"354 vai\r\n")
+            elif cmd == b"QUIT":
+                self.wfile.write(b"221 ciao\r\n"); return
+            else:
+                self.wfile.write(b"250 ok\r\n")
+
+
+smtp = socketserver.ThreadingTCPServer(("127.0.0.1", 0), FakeSMTP)
+threading.Thread(target=smtp.serve_forever, daemon=True).start()
+smtp_port = smtp.server_address[1]
+bia_id = db.execute("SELECT id FROM users WHERE username = 'bianchi'").fetchone()[0]
+bia_co = db.execute("SELECT company_id FROM users WHERE username = 'bianchi'").fetchone()[0]
+resets = lambda uid: db.execute("SELECT COUNT(*) FROM password_resets WHERE user_id = ?", (uid,)).fetchone()[0]
+
+form_post(bia, f"/utenti/{tec_id}/recupero", "/utenti", {})
+form_post(bia, f"/aziende/{bia_co}/recupero", "/", {"user_id": str(bia_id)})
+form_post(admin, f"/aziende/{bia_co}/recupero", "/aziende", {"user_id": str(tec_id)})
+check(resets(tec_id) == 0 and resets(bia_id) == 0,
+      "recupero: niente link per utenti di altre aziende, e solo il gestore li crea dalla pagina Aziende")
+r = form_post(admin, f"/aziende/{bia_co}/recupero", "/aziende", {"user_id": str(bia_id)})
+check(resets(bia_id) == 1 and "/recupero/" in r.text, "(preparazione) il gestore crea il link per l'amministratore di un'azienda")
+db.execute("INSERT INTO password_resets(token_hash, user_id, created_at, expires_at) VALUES(?, ?, ?, ?)",
+           (__import__("hashlib").sha256(b"scaduto-scaduto-scaduto-123").hexdigest(), bia_id, "2020-01-01", "2020-01-01T00:30:00+00:00"))
+db.commit()
+check(all("non vale più" in requests.get(BASE + f"/recupero/{t}").text for t in ("inventato-inventato-inventato-1", "scaduto-scaduto-scaduto-123")),
+      "recupero: link inventati o scaduti non valgono")
+
+# email: solo il gestore la configura; la risposta non rivela chi esiste; il link arriva e funziona
+form_post(bia, "/impostazioni/email", "/impostazioni", {"email_reset": "1", "smtp_host": "evil.example", "smtp_from": "a@evil.example"})
+check(db.execute("SELECT value FROM settings WHERE key = 'smtp_host'").fetchone() is None, "email: solo il gestore configura l'SMTP")
+form_post(admin, "/impostazioni/email", "/impostazioni", {"email_reset": "1", "smtp_host": "127.0.0.1", "smtp_port": str(smtp_port),
+                                                         "smtp_security": "nessuna", "smtp_from": "server@example.com", "azione": "salva"})
+db.execute("UPDATE users SET email = 'luigi@example.com' WHERE id = ?", (bia_id,)); db.commit()
+check("Password dimenticata" in requests.get(BASE + "/login").text, "(preparazione) recupero via email attivato dal gestore")
+def ask(who, ip):
+    s2 = requests.Session()
+    return s2.post(BASE + "/recupero", data={"csrf": csrf(s2.get(BASE + "/recupero").text), "who": who},
+                   headers={"X-Forwarded-For": ip}).text
+same = ask("nessuno_cosi", "198.51.100.1"), ask("bianchi", "198.51.100.2")
+got = None
+for _ in range(50):
+    if mails:
+        got = mails[-1]; break
+    time.sleep(0.1)
+strip = lambda t: re.sub(r'name="csrf" value="[^"]+"', "", t)
+check(strip(same[0]) == strip(same[1]) and "Se il nome utente" in same[0]
+      and got and "luigi@example.com" in got and "/recupero/" in got,
+      "email: stessa risposta per utenti esistenti e non, il link arriva solo all'interessato")
+import email as _email  # noqa: E402
+body = _email.message_from_string(got).get_payload(decode=True).decode() if got else ""
+m = re.search(r"(/recupero/[A-Za-z0-9_-]{20,})", body)
+if m:
+    s2 = requests.Session(); pg = s2.get(BASE + m.group(1)).text
+    s2.post(BASE + m.group(1), data={"csrf": csrf(pg), "password": "nuovabianchi1", "password2": "nuovabianchi1"})
+_, r = login("bianchi", "nuovabianchi1")
+check(r.status_code in (302, 303) and "/login" not in r.headers.get("location", ""), "email: il link ricevuto imposta la nuova password")
+n_before = len(mails)
+for i in range(8):
+    ask("bianchi", "198.51.100.9")
+time.sleep(1)
+check(len(mails) - n_before <= 3, "email: niente valanga di messaggi allo stesso utente", f"{len(mails) - n_before} email")
+bia, _ = login("bianchi", "nuovabianchi1")
+
+# ---------------------------------------------------------------- limiti
+plants_of = lambda: db.execute("SELECT COUNT(*) FROM plants p JOIN clients c ON c.id = p.client_id WHERE c.company_id = ?",
+                               (bia_co,)).fetchone()[0]
+n = plants_of()
+form_post(bia, f"/aziende/{bia_co}/limiti", "/", {"max_plants": "1000"})
+form_post(admin, f"/aziende/{bia_co}/limiti", "/aziende", {"max_plants": str(n - 1)})
+check(db.execute("SELECT max_plants FROM companies WHERE id = ?", (bia_co,)).fetchone()[0] is None,
+      "limiti: solo il gestore li cambia, e non sotto gli impianti che l'azienda ha già")
+form_post(admin, f"/aziende/{bia_co}/limiti", "/aziende", {"max_plants": str(n + 1)})
+page = bia.get(BASE + f"/clienti/{cid_x}").text
+results_add = []
+def add():
+    results_add.append(bia.post(BASE + f"/clienti/{cid_x}/impianti", data={"csrf": csrf(page), "name": "corsa"}).status_code)
+ts = [threading.Thread(target=add) for _ in range(6)]
+[t.start() for t in ts]; [t.join() for t in ts]
+check(plants_of() == n + 1, "limiti: richieste contemporanee non superano il limite di impianti", f"{plants_of()} su {n + 1}, risposte {results_add}")
+form_post(admin, f"/aziende/{bia_co}/limiti", "/aziende", {"max_clients": "1"})
+before_c = db.execute("SELECT COUNT(*) FROM clients WHERE company_id = ?", (bia_co,)).fetchone()[0]
+form_post(bia, "/clienti/nuovo", "/clienti/nuovo", {"name": "oltre il limite"})
+check(db.execute("SELECT COUNT(*) FROM clients WHERE company_id = ?", (bia_co,)).fetchone()[0] == before_c,
+      "limiti: oltre il limite di clienti non se ne aggiungono")
+
+# ---------------------------------------------------------------- sospensione
+token_x = paired["token"]
+form_post(bia, f"/aziende/{bia_co}/sospendi", "/", {})
+mario_co = db.execute("SELECT company_id FROM users WHERE id = ?", (mario_id,)).fetchone()[0]
+form_post(admin, f"/aziende/{mario_co}/sospendi", "/aziende", {})
+check(db.execute("SELECT COUNT(*) FROM companies WHERE suspended_at IS NOT NULL").fetchone()[0] == 0,
+      "sospensione: solo il gestore sospende, e non la propria azienda")
+form_post(admin, f"/aziende/{bia_co}/sospendi", "/aziende", {})
+r_agent = requests.post(BASE + "/api/agent/report", headers=agent_headers(token_x), json={"consent": True})
+_, r_login = login("bianchi", "nuovabianchi1")
+check("/login" in bia.get(BASE + "/").url and "sospeso" in r_login.text and r_agent.status_code == 423,
+      "sospensione: utenti fuori (anche le sessioni aperte), agenti in pausa senza perdere l'abbinamento",
+      f"{bia.get(BASE + '/').url} {r_login.status_code} {r_agent.status_code} {r_login.text[:0]}")
+form_post(admin, f"/aziende/{bia_co}/sospendi", "/aziende", {})
+check(requests.post(BASE + "/api/agent/report", headers=agent_headers(token_x), json={"consent": True}).status_code == 200,
+      "sospensione: riattivata l'azienda, l'agente riparte con lo stesso abbinamento")
+
+# ---------------------------------------------------------------- eliminazione
+form_post(admin, f"/aziende/{bia_co}/elimina", "/aziende", {"confirm_name": "Bianchi Elettrica", "password": "sbagliata!!"})
+form_post(bia, f"/aziende/{bia_co}/elimina", "/", {"confirm_name": "Bianchi Elettrica", "password": "nuovabianchi1"})
+form_post(admin, f"/aziende/{mario_co}/elimina", "/aziende", {"confirm_name": "Rossi Impianti", "password": "passwordsicura1"})
+check(db.execute("SELECT COUNT(*) FROM companies").fetchone()[0] == 2,
+      "eliminazione: serve la password del gestore, non la può fare un'azienda, e non la propria")
+backups = lambda: [f for f in os.listdir(os.path.join(DATA, "backups"))] if os.path.isdir(os.path.join(DATA, "backups")) else []
+form_post(admin, f"/aziende/{bia_co}/elimina", "/aziende", {"confirm_name": "bianchi  elettrica", "password": "passwordsicura1"})
+left = db.execute("SELECT (SELECT COUNT(*) FROM companies WHERE id = ?), (SELECT COUNT(*) FROM users WHERE company_id = ?), "
+                  "(SELECT COUNT(*) FROM clients WHERE company_id = ?)", (bia_co, bia_co, bia_co)).fetchone()
+check(left == (0, 0, 0) and any("azienda" in f for f in backups())
+      and requests.post(BASE + "/api/agent/report", headers=agent_headers(token_x), json={}).status_code == 401
+      and "Panoramica" in admin.get(BASE + "/").text,
+      "eliminazione: azienda cancellata con i suoi dati dopo una copia di sicurezza; i suoi agenti risultano revocati")
 
 # ---------------------------------------------------------------- intestazioni HTTP
 h = admin.get(BASE + "/").headers

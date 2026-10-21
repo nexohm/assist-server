@@ -274,6 +274,25 @@ try:
     check(admin_mod.DURATIONS.get("sempre", 0) is None and "status" in dir(adm) and "password" not in json.dumps(adm.status()),
           "amministratore: lo stato inviato al server non contiene mai la password")
 
+    # azienda dell'installatore sospesa (423): abbinamento conservato, accesso amministratore chiuso, pannello senza cicli
+    agent.state.update(connection="collegato", token="t")
+    adm.grant("4h"); adm.reveal()
+    from agent.link import ServerError as _SE  # noqa: E402
+    agent._handle_server_error(_SE(423, "assistenza sospesa"))
+    adm.tick()
+    orig_tickets = agent.link.tickets
+    calls = []
+    def suspended_tickets():
+        calls.append(1)
+        raise _SE(423, "assistenza sospesa")
+    agent.link.tickets = suspended_tickets
+    html_s = panel.page()
+    agent.link.tickets = orig_tickets
+    check(agent.state.get("token") == "t" and agent.state.get("connection") == "sospeso" and not adm.active()
+          and not fake_users and "Assistenza sospesa" in html_s and len(calls) <= 2,
+          "sospensione: l'agente resta abbinato, chiude l'accesso amministratore e il pannello non va in ciclo",
+          f"{agent.state.get('connection')} {adm.active()} {len(calls)}")
+
     # nome del tecnico deciso dal server: niente HTML nel pannello, niente link o righe in più nelle notifiche
     agent.state.update(connection="collegato", token="t")
     evil_by = EVIL + " [clicca](https://evil.example)\n\nRiga finta"

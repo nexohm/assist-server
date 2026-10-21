@@ -269,37 +269,56 @@ try:
           db.execute("SELECT consent, consent_until FROM plants WHERE id=?", (pid,)).fetchone()), 10, 0.2),
           "accesso senza scadenza")
 
-    # 8. ruoli
+    # 8. ruoli, primo accesso e recupero della password
     up = web.get(BASE + "/utenti").text
-    web.post(BASE + "/utenti", data={"csrf": csrf(up), "username": "luca", "full_name": "Luca", "password": "passwordluca1", "role": "lettura"})
+    web.post(BASE + "/utenti", data={"csrf": csrf(up), "username": "luca", "full_name": "Luca", "email": "luca@example.com",
+                                     "password": "passwordluca1", "role": "lettura"})
     ro = requests.Session(); lp = ro.get(BASE + "/login")
-    ro.post(BASE + "/login", data={"csrf": csrf(lp.text), "username": "luca", "password": "passwordluca1"})
-    check("Panoramica" in ro.get(BASE + "/").text, "utente sola lettura accede")
-    pg = ro.get(BASE + f"/impianti/{pid}").text
-    r = ro.post(BASE + f"/impianti/{pid}/comandi", data={"csrf": csrf(pg), "name": "ping"})
-    check("Non hai i permessi" in r.text and '/comandi"' not in pg, "sola lettura non può inviare comandi")
-    check("Non hai i permessi" in ro.get(BASE + "/utenti").text, "sola lettura non vede gestione utenti")
+    r = ro.post(BASE + "/login", data={"csrf": csrf(lp.text), "username": "luca", "password": "passwordluca1"})
+    check("scegli una password nuova" in r.text and "/account" in r.url and "/account" in ro.get(BASE + "/clienti").url,
+          "primo accesso: password data dall'amministratore da cambiare prima di tutto il resto")
     ap = ro.get(BASE + "/account").text
     r = ro.post(BASE + "/account", data={"csrf": csrf(ap), "azione": "password", "current": "sbagliata1234",
                                          "password": "nuovapassword1", "password2": "nuovapassword1"})
     check("password attuale non è corretta" in r.text, "cambio password: password attuale verificata")
+    old = requests.Session(); lp = old.get(BASE + "/login")
+    old.post(BASE + "/login", data={"csrf": csrf(lp.text), "username": "luca", "password": "passwordluca1"})
     r = ro.post(BASE + "/account", data={"csrf": csrf(ap), "azione": "password", "current": "passwordluca1",
                                          "password": "nuovapassword1", "password2": "nuovapassword1"})
-    check("Password cambiata" in r.text, "cambio password dal proprio account (anche sola lettura)")
+    check("Password cambiata" in r.text and "Panoramica" in ro.get(BASE + "/").text, "cambio password dal proprio account (anche sola lettura)")
+    check("/login" in old.get(BASE + "/").url, "cambiata la password, le altre sessioni aperte smettono di valere")
+    pg = ro.get(BASE + f"/impianti/{pid}").text
+    r = ro.post(BASE + f"/impianti/{pid}/comandi", data={"csrf": csrf(pg), "name": "ping"})
+    check("Non hai i permessi" in r.text and '/comandi"' not in pg, "sola lettura non può inviare comandi")
+    check("Non hai i permessi" in ro.get(BASE + "/utenti").text, "sola lettura non vede gestione utenti")
     ro2 = requests.Session(); lp = ro2.get(BASE + "/login")
     check("Panoramica" in ro2.post(BASE + "/login", data={"csrf": csrf(lp.text), "username": "luca", "password": "nuovapassword1"}).text,
           "accesso con la nuova password")
+
     up = web.get(BASE + "/utenti").text
     luca_id = db.execute("SELECT id FROM users WHERE username='luca'").fetchone()["id"]
-    r = web.post(BASE + f"/utenti/{luca_id}/password", data={"csrf": csrf(up), "password": "corta"})
-    check("almeno 10" in r.text, "reimpostazione: password troppo corta rifiutata")
-    r = web.post(BASE + f"/utenti/{luca_id}/password", data={"csrf": csrf(up), "password": "resetdaladmin1"})
-    check("reimpostata" in r.text, "l'amministratore reimposta la password di un utente")
+    r = web.post(BASE + f"/utenti/{luca_id}/recupero", data={"csrf": csrf(up)})
+    m = re.search(r'data-copy="(https?://[^"]+/recupero/[^"]+)"', r.text)
+    check(m and "30 minuti" in r.text, "l'amministratore crea un link di recupero per un suo utente")
+    link = m.group(1).replace("&amp;", "&") if m else BASE + "/recupero/x"
+    link = BASE + link[link.index("/recupero/"):]
+    check(not db.execute("SELECT 1 FROM password_resets WHERE token_hash LIKE ?", (link.rsplit("/", 1)[-1][:10] + "%",)).fetchone(),
+          "link di recupero: nel database c'è solo l'hash")
+    rs = requests.Session()
+    page = rs.get(link).text
+    r = rs.post(link, data={"csrf": csrf(page), "password": "corta", "password2": "corta"})
+    check("almeno 10" in r.text, "recupero: password troppo corta rifiutata")
+    r = rs.post(link, data={"csrf": csrf(page), "password": "dalrecupero12", "password2": "dalrecupero12"})
+    check("Password impostata" in r.text, "recupero: l'utente sceglie la nuova password dal link")
+    check("non vale più" in rs.get(link).text, "recupero: il link vale una volta sola")
+    check("/login" in ro2.get(BASE + "/").url, "recupero: le sessioni aperte con la vecchia password vengono chiuse")
     ro3 = requests.Session(); lp = ro3.get(BASE + "/login")
-    check("Panoramica" in ro3.post(BASE + "/login", data={"csrf": csrf(lp.text), "username": "luca", "password": "resetdaladmin1"}).text,
-          "accesso con la password reimpostata")
-    r = ro3.post(BASE + f"/utenti/{luca_id}/password", data={"csrf": csrf(ro3.get(BASE + "/account").text), "password": "hackerata12345"})
-    check("Non hai i permessi" in r.text, "un utente normale non può reimpostare password altrui")
+    check("Panoramica" in ro3.post(BASE + "/login", data={"csrf": csrf(lp.text), "username": "luca", "password": "dalrecupero12"}).text,
+          "accesso con la password scelta dal link")
+    r = ro3.post(BASE + f"/utenti/{luca_id}/recupero", data={"csrf": csrf(ro3.get(BASE + "/account").text)})
+    check("Non hai i permessi" in r.text, "un utente normale non può creare link di recupero")
+    check("Password dimenticata" not in requests.get(BASE + "/login").text and "non è attivo" in requests.get(BASE + "/recupero").text,
+          "senza email configurata il «Password dimenticata?» non compare")
 
     # 9. login errato e blocco
     bad = requests.Session()

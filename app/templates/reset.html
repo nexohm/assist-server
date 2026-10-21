@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block title %}Recupero password{% endblock %}
+{% block content %}
+<div class="auth">
+  <div class="brand">{{ company }}</div>
+  <div class="card">
+    <h1>Recupero password</h1>
+    {% if errors %}<div class="errors">{% for e in errors %}<p>{{ e }}</p>{% endfor %}</div>{% endif %}
+    {% if mode == "ask" %}
+      <p class="small muted" style="margin-top:0">Scrivi il tuo nome utente o la tua email: se l'account ha un'email,
+        riceverai un link per scegliere una password nuova.</p>
+      <form method="post" action="/recupero"><input type="hidden" name="csrf" value="{{ csrf }}">
+        <label for="who">Nome utente o email</label>
+        <input id="who" name="who" required autocomplete="username" autofocus>
+        <p style="margin-top:20px"><button class="btn">Invia il link</button></p>
+      </form>
+    {% elif mode == "sent" %}
+      <p>Se il nome utente o l'email corrispondono a un account con un indirizzo email, tra poco riceverai un link
+        valido 30 minuti. Controlla anche lo spam.</p>
+      <p class="small muted">Non arriva niente? Chiedi un link di recupero al tuo amministratore.</p>
+    {% elif mode == "off" %}
+      <p>Il recupero per email non è attivo su questo server. Chiedi un link di recupero al tuo amministratore
+        (o, se sei il gestore, usa sul server <code>sudo ha-suite password &lt;utente&gt;</code>).</p>
+    {% elif mode == "invalid" %}
+      <p>Questo link non vale più: è scaduto, è già stato usato oppure l'account non è attivo.</p>
+      <p class="small muted">Chiedine uno nuovo.</p>
+    {% elif mode == "new" %}
+      <p class="small muted" style="margin-top:0">Nuova password per <b>{{ target.username }}</b>.</p>
+      <form method="post" action="/recupero/{{ token }}"><input type="hidden" name="csrf" value="{{ csrf }}">
+        <input type="text" name="username" value="{{ target.username }}" autocomplete="username" hidden>
+        <label for="password">Nuova password (almeno 10 caratteri)</label>
+        <input id="password" type="password" name="password" required minlength="10" autocomplete="new-password" autofocus>
+        <label for="password2">Ripeti la nuova password</label>
+        <input id="password2" type="password" name="password2" required autocomplete="new-password">
+        <p style="margin-top:20px"><button class="btn">Imposta la password</button></p>
+      </form>
+    {% endif %}
+    <p class="small" style="margin:14px 0 0"><a href="/login">Torna all'accesso</a></p>
+  </div>
+</div>
+{% endblock %}

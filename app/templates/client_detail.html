@@ -14,7 +14,10 @@
         <td class="small">{{ p.ha_version or '—' }}</td><td class="small muted">{{ p.last_seen | ago }}</td></tr>{% endfor %}
     </table>
     {% else %}<p class="muted">Nessun impianto collegato.</p>{% endif %}
-    {% if can(user, 'edit') %}
+    {% if can(user, 'edit') and usage.plants_full %}
+    <p class="warnbox small" style="margin-top:16px">Limite di {{ usage.max_plants }} impianti raggiunto per la tua azienda:
+      per aggiungerne uno elimina un impianto o chiedi al gestore del server di alzare il limite.</p>
+    {% elif can(user, 'edit') %}
     <form method="post" action="/clienti/{{ client.id }}/impianti" class="row" style="margin-top:16px">
       <input type="hidden" name="csrf" value="{{ csrf }}">
       <input class="grow" name="name" placeholder="Nome impianto (es. Casa, Ufficio, Seconda casa)">

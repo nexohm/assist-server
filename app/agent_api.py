@@ -12,6 +12,7 @@ from . import db, notify, sanitize, secrets_store
 from .security import hash_token, new_token, normalize_pair_code
 
 PROTOCOL_VERSION = 1
+SUSPENDED = 423        # azienda dell'installatore sospesa dal gestore del server
 MAX_WAIT = 25          # secondi massimi di long-polling
 MAX_BODY = 512 * 1024  # una diagnostica sta comodamente sotto i 512 KB
 
@@ -81,9 +82,14 @@ def authenticate(request: Request):
     auth = request.headers.get("authorization", "")
     if not auth.startswith("Bearer "):
         return None, error(401, "token mancante")
-    plant = db.one("SELECT * FROM plants WHERE token_hash = ? AND revoked = 0", hash_token(auth[7:].strip()))
+    plant = db.one("SELECT p.*, co.suspended_at AS company_suspended FROM plants p JOIN clients c ON c.id = p.client_id "
+                   "JOIN companies co ON co.id = c.company_id WHERE p.token_hash = ? AND p.revoked = 0",
+                   hash_token(auth[7:].strip()))
     if not plant:
         return None, error(401, "token non valido o impianto revocato")
+    if plant["company_suspended"]:
+        # l'abbinamento resta valido: quando il gestore riattiva l'azienda, l'agente riparte da solo
+        return None, error(SUSPENDED, "assistenza sospesa: l'installatore al momento non segue l'impianto")
     db.run("UPDATE plants SET last_seen = ?, agent_version = COALESCE(?, agent_version) WHERE id = ?",
            db.now(), sanitize.text(request.headers.get("x-agent-version"), 40), plant["id"])
     return plant, None
@@ -95,7 +101,8 @@ async def pair(request: Request):
     except BadRequest as e:
         return error(e.status, str(e))
     code = normalize_pair_code(sanitize.text(data.get("code"), 20) or "")
-    plant = db.one("SELECT * FROM plants WHERE pair_code = ? AND revoked = 0", code) if code else None
+    plant = db.one("SELECT p.* FROM plants p JOIN clients c ON c.id = p.client_id JOIN companies co ON co.id = c.company_id "
+                   "WHERE p.pair_code = ? AND p.revoked = 0 AND co.suspended_at IS NULL", code) if code else None
     if not plant:
         return error(404, "codice di abbinamento inesistente o già usato")
     expires = db.parse_ts(plant["pair_expires"])

@@ -131,7 +131,8 @@ def check_plants():
     from .agent_api import is_online  # import locale: evita dipendenze circolari
 
     plants = db.all_("SELECT p.*, c.company_id FROM plants p JOIN clients c ON c.id = p.client_id "
-                     "WHERE p.paired_at IS NOT NULL AND p.revoked = 0")
+                     "JOIN companies co ON co.id = c.company_id "
+                     "WHERE p.paired_at IS NOT NULL AND p.revoked = 0 AND co.suspended_at IS NULL")
     for p in plants:
         co = p["company_id"]
         online = 1 if is_online(p) else 0

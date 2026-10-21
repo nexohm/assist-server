@@ -3,9 +3,9 @@
 {% block title %}Panoramica{% endblock %}
 {% block content %}
 <div class="head"><div><h1>Panoramica</h1><p class="muted" style="margin:0">Stato di tutti gli impianti in assistenza</p></div>
-  {% if can(user, 'edit') %}<a class="btn" href="/clienti/nuovo">+ Nuovo cliente</a>{% endif %}</div>
+  {% if can(user, 'edit') %}{% if usage.clients_full %}<span class="muted small" title="Chiedi al gestore del server di alzare il limite">Limite di {{ usage.max_clients }} clienti raggiunto</span>{% else %}<a class="btn" href="/clienti/nuovo">+ Nuovo cliente</a>{% endif %}{% endif %}</div>
 <div class="stats">
-  <a class="stat" href="/"><b>{{ total }}</b><span>Impianti</span></a>
+  <a class="stat" href="/"><b>{{ total }}</b><span>Impianti{% if usage.max_plants %} di {{ usage.max_plants }}{% endif %}</span></a>
   <a class="stat {{ 'bad' if counts.offline }} {{ 'active' if filtro == 'offline' }}" href="/?stato=offline"><b>{{ counts.offline }}</b><span>Offline</span></a>
   <a class="stat {{ 'bad' if counts.critico }} {{ 'active' if filtro == 'critico' }}" href="/?stato=critico"><b>{{ counts.critico }}</b><span>Critici</span></a>
   <a class="stat {{ 'warn' if counts.attenzione }} {{ 'active' if filtro == 'attenzione' }}" href="/?stato=attenzione"><b>{{ counts.attenzione }}</b><span>Da controllare</span></a>

@@ -156,6 +156,24 @@ MIGRATIONS = [
     CREATE INDEX idx_users_company ON users(company_id);
     CREATE INDEX idx_clients_company ON clients(company_id);
     """,
+    # 8 — aziende sospese e limiti (decisi dal gestore); email degli utenti, cambio password
+    #     obbligatorio e link di recupero monouso (nel database solo l'hash del link)
+    """
+    ALTER TABLE companies ADD COLUMN suspended_at TEXT;
+    ALTER TABLE companies ADD COLUMN max_clients INTEGER;
+    ALTER TABLE companies ADD COLUMN max_plants INTEGER;
+    ALTER TABLE users ADD COLUMN email TEXT;
+    ALTER TABLE users ADD COLUMN must_change INTEGER NOT NULL DEFAULT 0;
+    CREATE TABLE password_resets (
+        token_hash TEXT PRIMARY KEY,
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        created_by TEXT,
+        created_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        used_at TEXT
+    );
+    CREATE INDEX idx_password_resets_user ON password_resets(user_id);
+    """,
 ]
 
 
@@ -201,10 +219,15 @@ KEEP_BACKUPS = 10
 
 def _backup_before_migration(version):
     """Copia di sicurezza del database prima di cambiarne lo schema (aggiornamento dell'immagine)."""
+    return backup(f"schema{version}")
+
+
+def backup(label):
+    """Copia di sicurezza del database in /data/backups (si tengono le ultime KEEP_BACKUPS)."""
     backup_dir = os.path.join(DATA_DIR, "backups")
     os.makedirs(backup_dir, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-    target = os.path.join(backup_dir, f"suite-schema{version}-{stamp}.db")
+    target = os.path.join(backup_dir, f"suite-{label}-{stamp}.db")
     src = _connect()
     try:
         dst = sqlite3.connect(target)

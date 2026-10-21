@@ -56,6 +56,13 @@ ogni cliente ha un **add-on agente** sul proprio Home Assistant. Il cliente non 
   colore e bot Telegram, e non vede nulla delle altre; il gestore vede delle altre solo quante sono e quanti clienti
   e impianti hanno. Indirizzo del server, aggiornamenti e indirizzo pubblico restano al gestore. Un solo indirizzo
   per tutti: ogni impianto sa a quale azienda appartiene grazie al codice di abbinamento
+- **gestione delle aziende** (gestore): limiti di clienti e impianti per azienda (contano tutti gli impianti inseriti;
+  per abbassare il limite l'azienda deve prima eliminarne), **sospensione** (utenti fuori, impianti in pausa, nessun dato
+  perso) e **eliminazione** con copia di sicurezza automatica del database
+- **recupero della password**: link monouso valido 30 minuti creato dall'amministratore (per i suoi utenti), dal gestore
+  (per gli amministratori delle aziende) o dal server con `sudo ha-suite password <utente>`; a scelta del gestore anche
+  «Password dimenticata?» via email (SMTP). Le password iniziali date da altri vanno cambiate al primo accesso, e cambiando
+  password le altre sessioni aperte si chiudono
 
 **Agente (add-on)**
 - nessuna dipendenza esterna: solo Python standard
@@ -141,9 +148,8 @@ docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build       
 
 ## Prossimi passi (ordine consigliato)
 
-1. Aziende: recupero della password, eliminazione di un'azienda e limiti di clienti e impianti per azienda
-2. Report PDF per il cliente con il marchio dell'installatore
-3. Nuovi comandi: `create_backup`, `reload_integration`, `apply_blueprint` (libreria di configurazioni pronte)
-4. Integrazione HACS con sensori in HA del cliente (ticket aperti, stato assistenza)
-5. Licenze per la versione commerciale del server
-6. Backup automatico pianificato (oggi: `ha-suite backup` a mano o da cron)
+1. Report PDF per il cliente con il marchio dell'installatore
+2. Nuovi comandi: `create_backup`, `reload_integration`, `apply_blueprint` (libreria di configurazioni pronte)
+3. Integrazione HACS con sensori in HA del cliente (ticket aperti, stato assistenza)
+4. Licenze per la versione commerciale del server
+5. Backup automatico pianificato (oggi: `ha-suite backup` a mano o da cron)

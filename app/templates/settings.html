@@ -48,6 +48,36 @@
   </form>
 </div>
 
+{% if mail %}
+<div class="card" id="email">
+  <h2>Recupero della password via email</h2>
+  <p class="muted small" style="margin-top:0">Vale per tutte le aziende del server. Se è attivo, nella pagina di accesso compare
+    «Password dimenticata?» e chi ha un'email nel proprio account riceve un link valido 30 minuti. Senza email resta sempre il
+    link di recupero creato dall'amministratore (o da te per gli amministratori delle aziende).</p>
+  <form method="post" action="/impostazioni/email"><input type="hidden" name="csrf" value="{{ csrf }}">
+    <button name="azione" value="salva" tabindex="-1" aria-hidden="true" style="position:absolute;left:-9999px"></button>
+    <label class="check"><input type="checkbox" name="email_reset" value="1" {{ 'checked' if mail.enabled }}> Attiva «Password dimenticata?» via email</label>
+    <label for="smtp_host">Server SMTP</label><input id="smtp_host" name="smtp_host" value="{{ mail.smtp_host }}" placeholder="es. smtp.gmail.com">
+    <div class="row">
+      <div><label for="smtp_security">Sicurezza</label><select id="smtp_security" name="smtp_security">
+        {% for k, label in mail.security_options.items() %}<option value="{{ k }}" {{ 'selected' if (mail.smtp_security or 'starttls') == k }}>{{ label }}</option>{% endfor %}</select></div>
+      <div><label for="smtp_port">Porta</label><input id="smtp_port" name="smtp_port" inputmode="numeric" value="{{ mail.smtp_port }}" placeholder="automatica" style="width:120px"></div>
+    </div>
+    <label for="smtp_user">Utente SMTP</label><input id="smtp_user" name="smtp_user" value="{{ mail.smtp_user }}" autocomplete="off">
+    <label for="smtp_password">Password SMTP</label>
+    <input id="smtp_password" name="smtp_password" type="password" autocomplete="new-password"
+           placeholder="{{ 'impostata — lascia vuoto per non cambiarla' if mail.password_set else 'per Gmail: una «password per le app»' }}">
+    <label for="smtp_from">Mittente (email)</label><input id="smtp_from" name="smtp_from" value="{{ mail.smtp_from }}" placeholder="es. info.nexohm@gmail.com">
+    <label for="email_sender_name">Nome del mittente</label><input id="email_sender_name" name="email_sender_name" value="{{ mail.sender_name }}" placeholder="Assistenza impianti">
+    <div class="row" style="margin-top:16px">
+      <button class="btn" name="azione" value="salva">Salva</button>
+      <button class="btn ghost" name="azione" value="prova">Invia prova{% if user.email %} a {{ user.email }}{% endif %}</button>
+      {% if mail.enabled %}<button class="btn danger" name="azione" value="disattiva">Disattiva</button>{% endif %}
+    </div>
+  </form>
+</div>
+{% endif %}
+
 {% if upd %}
 <div class="card" id="aggiornamenti">
   <h2>Aggiornamenti</h2>
