@@ -68,7 +68,9 @@ r = web.post(BASE + "/impostazioni/telegram", data={"csrf": csrf(r.text), "teleg
 check("Invio non riuscito: Unauthorized" in r.text, "Telegram: token sbagliato -> errore chiaro")
 web.post(BASE + "/impostazioni/telegram", data={"csrf": csrf(r.text), "telegram_token": "123:TOKEN", "azione": "salva",
                                                 "notify_tickets": "1", "notify_offline": "1", "notify_critical": "1"})
-check("impostato" in web.get(BASE + "/impostazioni").text, "Telegram: il token non viene mostrato nella pagina")
+st = web.get(BASE + "/impostazioni").text
+check("impostato" in st, "Telegram: il token non viene mostrato nella pagina")
+check('id="aggiornamenti"' in st and "UPDATE_CHECK=0" in st, "Impostazioni: scheda Aggiornamenti con lo stato del controllo")
 
 # 2. cliente + impianto
 r = web.get(BASE + "/clienti/nuovo")
@@ -119,6 +121,8 @@ try:
     check(wait_for(lambda: db.execute("SELECT status FROM commands WHERE plant_id=? ORDER BY id DESC", (pid,)).fetchone()["status"] == "completato", 15, 0.1), "ping eseguito")
     r = web.post(BASE + f"/impianti/{pid}/comandi", data={"csrf": csrf(page), "name": "rm_rf"})
     check("Comando non valido" in r.text, "comando fuori lista rifiutato dalla dashboard")
+    check('value="admin_password"' not in page and 'value="admin_close"' not in page and 'value="run_diagnostics"' in page,
+          "comandi dell'accesso amministratore non mostrati tra i comandi generici")
     # comando fuori lista iniettato direttamente nel DB: l'agente deve rifiutarlo
     db.execute("INSERT INTO commands(plant_id,name,args,created_at) VALUES(?,?,?,?)", (pid, "shell", "{}", "2026-01-01T00:00:00+00:00")); db.commit()
     check(wait_for(lambda: db.execute("SELECT status FROM commands WHERE name='shell'").fetchone()["status"] == "errore", 40, 0.2), "comando sconosciuto rifiutato dall'agente")
@@ -143,6 +147,7 @@ try:
     pn = [c for c in ha_calls() if c["domain"] == "persistent_notification"][0]["data"]
     check(pn["title"].startswith("Rossi Impianti") and pn["notification_id"].startswith("assistenza_ticket_"),
           "notifica con nome installatore e id per richiesta")
+    check("Mario Rossi ha risposto" in pn["message"], "notifica della risposta con il nome del tecnico")
     panel = requests.get(PANEL + "?s=preferenze").text
     check("App sul telefono: pixel 7" in panel and "telegram casa" in panel and "send message" not in panel,
           "pannello: servizi notify di HA proposti al cliente")
@@ -320,12 +325,16 @@ try:
     fake_users = lambda: requests.get("http://127.0.0.1:8123/fake/users").json()
     page = web.get(BASE + f"/impianti/{pid}").text
     check("Chiedi accesso amministratore" in page, "amministratore: pulsante per chiedere l'accesso")
-    web.post(BASE + f"/impianti/{pid}/amministratore", data={"csrf": csrf(page), "op": "richiedi"})
+    r = web.post(BASE + f"/impianti/{pid}/amministratore", data={"csrf": csrf(page), "op": "richiedi"})
+    check("da Mario Rossi" in r.text, "amministratore: la dashboard mostra chi ha fatto la richiesta")
     check(wait_for(lambda: (json.load(open(f"{S}/agentdata/state.json")).get("admin") or {}).get("request"), 40, 0.5),
           "amministratore: la richiesta arriva all'agente")
     check("chiede l&#39;accesso amministratore" in requests.get(PANEL + "?s=impianto").text
           and any("richiesta di accesso amministratore" in c["data"].get("title", "") for c in ha_calls()),
           "amministratore: il cliente vede la richiesta e riceve una notifica")
+    check("Mario Rossi di Rossi Impianti chiede" in requests.get(PANEL + "?s=impianto").text
+          and any("Mario Rossi di Rossi Impianti chiede" in c["data"].get("message", "") for c in ha_calls()),
+          "amministratore: il cliente vede quale tecnico e quale azienda chiede l'accesso")
     panel_post("admin", {"op": "consenti", "durata": "1h"})
     check(wait_for(lambda: '"active": true' in (db.execute("SELECT admin_state FROM plants WHERE id=?", (pid,)).fetchone()[0] or ""), 40, 0.5)
           and db.execute("SELECT admin_requested_at FROM plants WHERE id=?", (pid,)).fetchone()[0] is None,
@@ -337,12 +346,21 @@ try:
     page = wait_for(lambda: (lambda t: t if 'class="secret"' in t else None)(web.get(BASE + f"/impianti/{pid}").text), 40, 0.5)
     check(users and len(users) == 1 and users[0]["group_ids"] == ["system-admin"] and page and users[0]["password"] in page
           and users[0]["username"] in page, "amministratore: utente creato in HA, credenziali mostrate all'installatore")
+    check(users and users[0]["name"].startswith("Mario Rossi · Rossi Impianti")
+          and any("Mario Rossi di Rossi Impianti ha appena aperto" in c["data"].get("message", "") for c in ha_calls()),
+          "amministratore: utente HA e notifica col nome del tecnico")
     check(users and users[0]["password"] not in json.dumps([dict(r) for r in db.execute("SELECT * FROM commands")]),
           "amministratore: password non salvata nel database del server")
     panel_post("admin", {"op": "chiudi"})
     check(wait_for(lambda: not fake_users(), 20, 0.5), "amministratore: il cliente chiude e l'utente viene cancellato")
     check(wait_for(lambda: 'class="secret"' not in web.get(BASE + f"/impianti/{pid}").text, 40, 0.5),
           "amministratore: la password sparisce dalla dashboard quando l'accesso è chiuso")
+    panel_post("admin", {"op": "consenti", "durata": "1h"})
+    wait_for(lambda: '"active": true' in (db.execute("SELECT admin_state FROM plants WHERE id=?", (pid,)).fetchone()[0] or ""), 40, 0.5)
+    page = web.get(BASE + f"/impianti/{pid}").text
+    web.post(BASE + f"/impianti/{pid}/amministratore", data={"csrf": csrf(page), "op": "chiudi"})
+    check(wait_for(lambda: any("chiuso da Mario Rossi" in c["data"].get("message", "") for c in ha_calls()), 40, 0.5),
+          "amministratore: chiuso dall'installatore, il cliente sa chi l'ha chiuso")
 
     # 11. revoca
     page = web.get(BASE + f"/impianti/{pid}").text

@@ -112,6 +112,10 @@ MIGRATIONS = [
     ALTER TABLE plants ADD COLUMN admin_requested_at TEXT;
     ALTER TABLE plants ADD COLUMN admin_state TEXT;
     """,
+    # 6 — nome della persona che ha chiesto l'accesso amministratore (il cliente vede chi lo chiede)
+    """
+    ALTER TABLE plants ADD COLUMN admin_requested_by TEXT;
+    """,
 ]
 
 

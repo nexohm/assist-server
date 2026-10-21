@@ -45,5 +45,18 @@
     </div>
   </form>
 </div>
+
+<div class="card" id="aggiornamenti">
+  <h2>Aggiornamenti</h2>
+  <dl class="kv">
+    <dt>Server in uso</dt><dd><code>{{ upd.current }}</code>{% if not upd.release %} <span class="badge s-in_attesa">versione di prova</span>{% endif %}</dd>
+    <dt>Server pubblicato</dt><dd>{% if upd.latest_server %}<code>{{ upd.latest_server }}</code>{% if upd.server_update %} <span class="tag-update">da installare</span>{% elif upd.release %} <span class="muted small">sei aggiornato</span>{% endif %}{% else %}<span class="muted">non ancora letto</span>{% endif %}</dd>
+    <dt>Agente pubblicato</dt><dd>{% if upd.latest_agent %}<code>{{ upd.latest_agent }}</code>{% if upd.outdated_agents %} <span class="tag-update">{{ upd.outdated_agents }} {{ 'impianto da aggiornare' if upd.outdated_agents == 1 else 'impianti da aggiornare' }}</span>{% endif %}{% else %}<span class="muted">non ancora letto</span>{% endif %}</dd>
+    <dt>Ultimo controllo</dt><dd>{% if not upd.enabled %}disattivato (<code>UPDATE_CHECK=0</code>){% else %}{{ upd.checked_at | ago }}{% if upd.error %} <span class="muted small">— ultimo tentativo {{ upd.attempt_at | ago }} non riuscito: {{ upd.error }}</span>{% endif %}{% endif %}</dd>
+  </dl>
+  {% if not upd.release %}<p class="muted small">Con una versione di prova l'avviso in cima alle pagine non compare: per tornare alle versioni pubblicate imposta <code>SUITE_TAG=latest</code> e aggiorna.</p>{% endif %}
+  <p class="muted small">Il controllo avviene da solo ogni ora. Per aggiornare il server: <code>sudo ha-suite aggiorna</code>. L'agente si aggiorna da Home Assistant del cliente (Impostazioni → Add-on).</p>
+  {% if upd.enabled %}<form method="post" action="/impostazioni/aggiornamenti"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="btn ghost">Controlla adesso</button></form>{% endif %}
+</div>
 </div>
 {% endblock %}

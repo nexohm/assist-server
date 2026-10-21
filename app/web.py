@@ -82,7 +82,8 @@ templates.env.filters["ts"] = fmt_ts
 templates.env.filters["ago"] = ago
 templates.env.globals.update(agent_outdated=updates.agent_outdated, latest_agent=updates.latest_agent,
                              TICKET_STATUS=TICKET_STATUS, COMMAND_STATUS=COMMAND_STATUS,
-                             ROLE_LABELS=ROLE_LABELS, ALLOWED_COMMANDS={**ALLOWED_COMMANDS, **ADMIN_COMMANDS}, can=can,
+                             ROLE_LABELS=ROLE_LABELS, ALLOWED_COMMANDS=ALLOWED_COMMANDS,
+                             COMMAND_LABELS={**ALLOWED_COMMANDS, **ADMIN_COMMANDS}, can=can,
                              is_online=is_online, asset=asset)
 
 
@@ -602,9 +603,15 @@ async def plant_command(request: Request):
 
 # ---------- accesso amministratore temporaneo ----------
 
+def person_name(user):
+    """Nome con cui il cliente vede la persona dell'installatore (nome completo, altrimenti utente)."""
+    return ((user.get("full_name") or "").strip() or user["username"])[:60]
+
+
 def _admin_command(plant, name, request):
-    db.run("INSERT INTO commands(plant_id, name, args, created_by, created_at) VALUES(?, ?, '{}', ?, ?)",
-           plant["id"], name, request.state.user["id"], db.now())
+    # il nome di chi agisce viaggia col comando: il cliente vede nella notifica chi è entrato o ha chiuso
+    db.run("INSERT INTO commands(plant_id, name, args, created_by, created_at) VALUES(?, ?, ?, ?, ?)",
+           plant["id"], name, json.dumps({"by": person_name(request.state.user)}), request.state.user["id"], db.now())
     ring(plant["id"])
 
 
@@ -619,10 +626,11 @@ async def plant_admin(request: Request):
     if op == "richiedi":
         if active:
             return redirect(f"/impianti/{pid}", "Il cliente ha già concesso l'accesso amministratore.", request)
-        db.run("UPDATE plants SET admin_requested_at = ? WHERE id = ?", db.now(), pid)
+        db.run("UPDATE plants SET admin_requested_at = ?, admin_requested_by = ? WHERE id = ?",
+               db.now(), person_name(request.state.user), pid)
         return redirect(f"/impianti/{pid}", "Richiesta inviata: il cliente riceverà una notifica in Home Assistant.", request)
     if op == "annulla":
-        db.run("UPDATE plants SET admin_requested_at = NULL WHERE id = ?", pid)
+        db.run("UPDATE plants SET admin_requested_at = NULL, admin_requested_by = NULL WHERE id = ?", pid)
         return redirect(f"/impianti/{pid}", "Richiesta annullata.", request)
     if op == "password":
         if not active:
@@ -686,7 +694,7 @@ async def ticket_reply(request: Request):
     if text:
         u = request.state.user
         db.run("INSERT INTO ticket_messages(ticket_id, author_type, author_name, text, created_at) "
-               "VALUES(?, 'installatore', ?, ?, ?)", tid, u["full_name"] or u["username"], text[:5000], ts)
+               "VALUES(?, 'installatore', ?, ?, ?)", tid, person_name(u), text[:5000], ts)
     status = form.get("status")
     if status in TICKET_STATUS:
         db.run("UPDATE tickets SET status = ? WHERE id = ?", status, tid)
@@ -792,7 +800,28 @@ async def settings_page(request: Request):
                   saved_url=db.get_setting("public_url", ""),
                   tg_token_set=bool(db.get_setting("telegram_token")),
                   tg_chat_id=db.get_setting("telegram_chat_id", ""),
-                  tg_events={k: (label, db.get_setting(k, "1") == "1") for k, label in notify.EVENTS.items()})
+                  tg_events={k: (label, db.get_setting(k, "1") == "1") for k, label in notify.EVENTS.items()},
+                  upd=_update_status())
+
+
+def _update_status():
+    st = updates.status()
+    for k in ("checked_at", "attempt_at"):
+        st[k] = datetime.fromtimestamp(st[k], timezone.utc) if st[k] else None
+    agents = db.all_("SELECT agent_version FROM plants WHERE paired_at IS NOT NULL AND revoked = 0 AND agent_version IS NOT NULL")
+    st["outdated_agents"] = sum(1 for p in agents if updates.agent_outdated(p["agent_version"]))
+    return st
+
+
+@guard("settings")
+async def update_check(request: Request):
+    error = await asyncio.to_thread(updates.check_now)
+    if error:
+        return redirect("/impostazioni#aggiornamenti", f"Controllo non riuscito: {error}", request, error=True)
+    new = updates.server_update()
+    return redirect("/impostazioni#aggiornamenti",
+                    f"È disponibile la versione {new} del server." if new else "Controllo eseguito: nessun aggiornamento del server.",
+                    request)
 
 
 @guard("settings")
@@ -880,5 +909,6 @@ routes = [
     Route("/account", account_page, methods=["GET", "POST"]),
     Route("/impostazioni", settings_page, methods=["GET", "POST"]),
     Route("/impostazioni/telegram", telegram_settings, methods=["POST"]),
+    Route("/impostazioni/aggiornamenti", update_check, methods=["POST"]),
     Route("/impianti/{pid:int}/ha-url", plant_ha_url, methods=["POST"]),
 ]

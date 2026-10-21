@@ -141,7 +141,8 @@ async def report(request: Request):
         # richiesta soddisfatta (accesso concesso) o rifiutata dal cliente: non va più riproposta
         req = plant.get("admin_requested_at")
         if req and (admin["active"] or admin["declined"] == req):
-            db.run("UPDATE plants SET admin_requested_at = NULL WHERE id = ? AND admin_requested_at = ?", plant["id"], req)
+            db.run("UPDATE plants SET admin_requested_at = NULL, admin_requested_by = NULL "
+                   "WHERE id = ? AND admin_requested_at = ?", plant["id"], req)
     diag = sanitize.diagnostics(data.get("diagnostics"))
     if consent and diag:
         db.run("UPDATE plants SET last_diag = ?, last_diag_at = ? WHERE id = ?",
@@ -150,8 +151,10 @@ async def report(request: Request):
     # Nome e colore dell'installatore viaggiano a ogni rapporto: se cambiano, il pannello del cliente si aggiorna.
     # Ultimo aggiornamento dei ticket dell'impianto: se cambia, l'agente li rilegge e avvisa il cliente.
     last_ticket = db.one("SELECT MAX(updated_at) AS ts FROM tickets WHERE plant_id = ?", plant["id"])
-    requested = db.one("SELECT admin_requested_at FROM plants WHERE id = ?", plant["id"])["admin_requested_at"]
-    return JSONResponse({"ok": True, "pending_commands": pending["n"], "admin_requested": requested,
+    requested = db.one("SELECT admin_requested_at, admin_requested_by FROM plants WHERE id = ?", plant["id"])
+    return JSONResponse({"ok": True, "pending_commands": pending["n"],
+                         "admin_requested": requested["admin_requested_at"],
+                         "admin_requested_by": requested["admin_requested_by"] if requested["admin_requested_at"] else None,
                          "tickets_updated": last_ticket["ts"],
                          "server_name": db.get_setting("company_name", "Assistenza"),
                          "brand_color": db.get_setting("brand_color", "#0f766e")})
@@ -268,8 +271,11 @@ async def tickets(request: Request):
         notify.new_ticket(tid, plant["id"], title, description)
         return JSONResponse({"ticket_id": tid})
 
-    rows = db.all_("SELECT id, title, status, created_at, updated_at FROM tickets WHERE plant_id = ? "
-                   "ORDER BY updated_at DESC LIMIT 50", plant["id"])
+    # chi segue la richiesta: il cliente vede nelle notifiche il nome del tecnico
+    rows = db.all_("SELECT t.id, t.title, t.status, t.created_at, t.updated_at, "
+                   "COALESCE(NULLIF(TRIM(u.full_name), ''), u.username) AS assigned_name "
+                   "FROM tickets t LEFT JOIN users u ON u.id = t.assigned_to WHERE t.plant_id = ? "
+                   "ORDER BY t.updated_at DESC LIMIT 50", plant["id"])
     for t in rows:
         t["messages"] = db.all_("SELECT author_type, author_name, text, created_at FROM ticket_messages "
                                 "WHERE ticket_id = ? ORDER BY id", t["id"])

@@ -273,6 +273,18 @@ try:
     check(not adm.active() and not fake_users, "amministratore: se l'impianto viene scollegato l'accesso si chiude")
     check(admin_mod.DURATIONS.get("sempre", 0) is None and "status" in dir(adm) and "password" not in json.dumps(adm.status()),
           "amministratore: lo stato inviato al server non contiene mai la password")
+
+    # nome del tecnico deciso dal server: niente HTML nel pannello, niente link o righe in più nelle notifiche
+    agent.state.update(connection="collegato", token="t")
+    evil_by = EVIL + " [clicca](https://evil.example)\n\nRiga finta"
+    messages = []
+    agent.notify_client = lambda title, message, tag: messages.append(message) or 1
+    adm.on_server_request("2099-01-01T00:00:00+00:00", evil_by)
+    stored = adm.get()["request_by"] or ""
+    page_html = panel._admin_html()
+    check("\n" not in stored and len(stored) <= 60 and "<img" not in page_html
+          and messages and "](" not in messages[-1].replace("\\]\\(", "") and "<img" not in messages[-1],
+          "amministratore: il nome del tecnico inviato dal server non diventa HTML né link", messages[-1] if messages else stored)
 finally:
     ha_mod.ws_command = orig_ws
 

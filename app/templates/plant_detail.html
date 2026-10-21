@@ -51,7 +51,7 @@
       <h2>Comandi recenti</h2>
       {% if commands %}
       <table id="cmds"><tr><th>Comando</th><th>Stato</th><th>Da</th><th>Quando</th></tr>
-        {% for c in commands %}<tr data-id="{{ c.id }}"><td>{{ ALLOWED_COMMANDS.get(c.name, c.name) }}</td>
+        {% for c in commands %}<tr data-id="{{ c.id }}"><td>{{ COMMAND_LABELS.get(c.name, c.name) }}</td>
           <td><span class="badge s-{{ c.status }}">{{ COMMAND_STATUS[c.status] }}</span></td>
           <td class="small muted">{{ c.username or '—' }}</td><td class="small muted">{{ c.created_at | ago }}</td></tr>{% endfor %}
       </table>
@@ -98,7 +98,7 @@
         <p class="small muted" style="margin:8px 0 0">Il cliente riceve una notifica ogni volta che entri e può chiudere l'accesso quando vuole.</p>
         {% endif %}
       {% elif plant.admin_requested_at %}
-        <p style="margin:0 0 8px">Richiesta inviata {{ plant.admin_requested_at | ago }}: in attesa che il cliente la accetti dal suo pannello.</p>
+        <p style="margin:0 0 8px">Richiesta inviata {{ plant.admin_requested_at | ago }}{% if plant.admin_requested_by %} da {{ plant.admin_requested_by }}{% endif %}: in attesa che il cliente la accetti dal suo pannello.</p>
         {% if can(user, 'edit') %}
         <form method="post" action="/impianti/{{ plant.id }}/amministratore"><input type="hidden" name="csrf" value="{{ csrf }}">
           <input type="hidden" name="op" value="annulla"><button class="btn ghost small">Annulla richiesta</button></form>
