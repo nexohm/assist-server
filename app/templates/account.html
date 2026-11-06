@@ -25,5 +25,20 @@
       <p style="margin-top:16px"><button class="btn">Cambia password</button></p>
     </form>
   </div>
+  {% if sso %}
+  <div class="card" id="sso">
+    <h2>Accesso con {{ sso.label }}</h2>
+    {% if user.oidc_sub %}
+    <p class="small" style="margin-top:0"><span class="badge s-ok">Collegato</span> Puoi entrare con «Accedi con {{ sso.label }}» oltre che con la password.</p>
+    <form method="post" action="/account/accesso"><input type="hidden" name="csrf" value="{{ csrf }}">
+      <button class="btn ghost" name="azione" value="scollega" data-confirm="Scollegare il tuo account da {{ sso.label }}?">Scollega</button></form>
+    {% else %}
+    <p class="small" style="margin-top:0">Collega il tuo account di {{ sso.label }}: ti porta sulla pagina di accesso del provider e,
+      una volta entrato, potrai usare «Accedi con {{ sso.label }}» al posto della password.</p>
+    <form method="post" action="/account/accesso"><input type="hidden" name="csrf" value="{{ csrf }}">
+      <button class="btn" name="azione" value="collega">Collega {{ sso.label }}</button></form>
+    {% endif %}
+  </div>
+  {% endif %}
 </div>
 {% endblock %}

@@ -174,6 +174,12 @@ MIGRATIONS = [
     );
     CREATE INDEX idx_password_resets_user ON password_resets(user_id);
     """,
+    # 9 — accesso con il provider OpenID Connect dell'azienda (Authentik…): identità del provider
+    #     legata all'utente al primo accesso. Le impostazioni del provider stanno in company_settings.
+    """
+    ALTER TABLE users ADD COLUMN oidc_sub TEXT;
+    CREATE UNIQUE INDEX idx_users_oidc ON users(company_id, oidc_sub) WHERE oidc_sub IS NOT NULL;
+    """,
 ]
 
 

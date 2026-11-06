@@ -37,11 +37,12 @@ assistenza e, solo se il cliente lo concede, entra come amministratore per qualc
 8. [Più aziende sullo stesso server](#più-aziende-sullo-stesso-server)
 9. [Notifiche Telegram](#notifiche-telegram)
 10. [Password dimenticata ed email](#password-dimenticata-ed-email)
-11. [Accesso amministratore temporaneo](#accesso-amministratore-temporaneo)
-12. [Gestione quotidiana: il comando `ha-suite`](#gestione-quotidiana-il-comando-ha-suite)
-13. [Aggiornamenti, backup e ripristino](#aggiornamenti-backup-e-ripristino)
-14. [Sicurezza e privacy](#sicurezza-e-privacy)
-15. [Sviluppo, prove e rilasci](#sviluppo-prove-e-rilasci)
+11. [Accesso con Authentik (OpenID Connect)](#accesso-con-authentik-openid-connect)
+12. [Accesso amministratore temporaneo](#accesso-amministratore-temporaneo)
+13. [Gestione quotidiana: il comando `ha-suite`](#gestione-quotidiana-il-comando-ha-suite)
+14. [Aggiornamenti, backup e ripristino](#aggiornamenti-backup-e-ripristino)
+15. [Sicurezza e privacy](#sicurezza-e-privacy)
+16. [Sviluppo, prove e rilasci](#sviluppo-prove-e-rilasci)
 
 ---
 
@@ -76,6 +77,7 @@ cifrato in HTTPS. L'agente esegue solo una lista chiusa di comandi e non può mo
 - **Ticket**: richieste dei clienti con diagnostica allegata, risposte, stato e assegnazione a un tecnico.
 - **Accesso amministratore temporaneo** all'Home Assistant del cliente, solo se il cliente lo concede.
 - **Utenti** con ruoli (amministratore, tecnico, sola lettura) e **più aziende** sullo stesso server.
+- **Accesso con Authentik** o un altro provider OpenID Connect, scelto da ogni azienda (oltre alla password).
 - **Notifiche Telegram**: nuovi ticket, risposte, impianti offline o in stato critico.
 - **Avvisi di aggiornamento** del server e degli agenti; conferme animate a ogni salvataggio.
 
@@ -222,6 +224,33 @@ Consigli:
 - il server **controlla ogni giorno** che la posta funzioni e **ogni 30 giorni** invia un'email di controllo al
   gestore: così le chiavi che scadono se inutilizzate (Brevo, per esempio, dopo 90 giorni) restano attive;
 - se qualcosa smette di funzionare, il gestore vede un avviso in dashboard e, se ha Telegram, riceve un messaggio.
+
+## Accesso con Authentik (OpenID Connect)
+
+Ogni azienda può far entrare i suoi utenti con l'account del proprio provider **OpenID Connect**: Authentik,
+ma anche Keycloak, Zitadel, Authelia e simili. È una strada in più: il login con nome utente e password resta
+sempre disponibile, anche se il provider non risponde. Il provider non crea utenti e non decide i ruoli: entra
+solo chi esiste già tra gli utenti dell'azienda, con il ruolo che ha nella dashboard.
+
+**In Authentik**
+1. **Applicazioni → Crea con procedura guidata**, provider **OAuth2/OpenID**, tipo di client **Confidential**.
+2. Redirect URI (modalità *Strict*): `https://<indirizzo-del-server>/accesso/callback` — lo trovi già pronto da
+   copiare in **Impostazioni → Accesso con Authentik**.
+3. Scegli una **chiave di firma** e lascia gli scope `openid`, `email`, `profile`.
+
+**Nella dashboard** (amministratore dell'azienda): **Impostazioni → Accesso con Authentik**, incolla
+l'*OpenID Configuration Issuer* dell'applicazione (es. `https://auth.tuodominio.it/application/o/assistenza/`),
+Client ID e Client secret, premi **Prova collegamento**, spunta **Attiva** e salva. Compare il **link d'accesso
+dell'azienda** (`/accesso/<codice>`) da mandare ai tecnici: la pagina di accesso non elenca le aziende del server,
+e il pulsante «Accedi con Authentik» compare nei browser che hanno già usato quel link.
+
+**Collegare gli utenti.** Ogni utente entra una volta con la password e in **Il mio account** preme
+**Collega Authentik**: così si dimostra che l'utente della dashboard e quello di Authentik sono la stessa persona.
+In alternativa l'amministratore può attivare il **collegamento automatico per email**: va bene solo se in
+Authentik gli utenti non possono cambiarsi l'email da soli (il flusso predefinito delle impostazioni utente lo
+permette), altrimenti un tecnico potrebbe mettere l'email di un amministratore ed entrare al suo posto. Dopo il
+primo accesso conta l'identità di Authentik, non più l'email. Da **Utenti** si può scollegare un utente;
+cambiando provider o applicazione tutti i collegamenti si azzerano.
 
 ## Accesso amministratore temporaneo
 

@@ -39,11 +39,12 @@ The user interface (dashboard and customer panel) is currently in **Italian**.
 8. [Several companies on one server](#several-companies-on-one-server)
 9. [Telegram notifications](#telegram-notifications)
 10. [Forgotten passwords and email](#forgotten-passwords-and-email)
-11. [Temporary administrator access](#temporary-administrator-access)
-12. [Day-to-day management: the `ha-suite` command](#day-to-day-management-the-ha-suite-command)
-13. [Updates, backup and restore](#updates-backup-and-restore)
-14. [Security and privacy](#security-and-privacy)
-15. [Development, testing and releases](#development-testing-and-releases)
+11. [Signing in with Authentik (OpenID Connect)](#signing-in-with-authentik-openid-connect)
+12. [Temporary administrator access](#temporary-administrator-access)
+13. [Day-to-day management: the `ha-suite` command](#day-to-day-management-the-ha-suite-command)
+14. [Updates, backup and restore](#updates-backup-and-restore)
+15. [Security and privacy](#security-and-privacy)
+16. [Development, testing and releases](#development-testing-and-releases)
 
 ---
 
@@ -78,6 +79,7 @@ HTTPS. The agent only runs a closed list of commands and cannot change the confi
 - **Tickets**: customer requests with diagnostics attached, replies, status and assignment to a technician.
 - **Temporary administrator access** to the customer's Home Assistant, only if the customer grants it.
 - **Users** with roles (administrator, technician, read-only) and **several companies** on one server.
+- **Sign-in with Authentik** or another OpenID Connect provider, chosen by each company (besides passwords).
 - **Telegram notifications**: new tickets, replies, systems offline or critical.
 - **Update notices** for the server and the agents; animated confirmations on every save.
 
@@ -225,6 +227,32 @@ Tips:
 - the server **checks the mail login every day** and **every 30 days** sends a check email to the manager, so keys
   that expire when unused (Brevo, for instance, after 90 days) stay active;
 - if something stops working the manager sees a warning in the dashboard and, with Telegram set up, gets a message.
+
+## Signing in with Authentik (OpenID Connect)
+
+Each company can let its users sign in with their account on its own **OpenID Connect** provider: Authentik, but
+also Keycloak, Zitadel, Authelia and similar. It is an extra option: username and password login always stays
+available, even if the provider is down. The provider does not create users or decide roles: only existing users
+of the company can sign in, with the role they have in the dashboard.
+
+**In Authentik**
+1. **Applications → Create with wizard**, provider **OAuth2/OpenID**, client type **Confidential**.
+2. Redirect URI (*Strict* mode): `https://<server-address>/accesso/callback` — ready to copy in
+   **Impostazioni → Accesso con Authentik**.
+3. Pick a **signing key** and keep the `openid`, `email`, `profile` scopes.
+
+**In the dashboard** (company administrator): **Impostazioni → Accesso con Authentik**, paste the application's
+*OpenID Configuration Issuer* (e.g. `https://auth.yourdomain.com/application/o/assistenza/`), Client ID and Client
+secret, press **Prova collegamento**, tick **Attiva** and save. The **company sign-in link** (`/accesso/<code>`)
+appears, to send to your technicians: the login page does not list the companies on the server, and the "Accedi con
+Authentik" button shows up in browsers that have already used that link.
+
+**Linking users.** Each user signs in once with their password and presses **Collega Authentik** in
+**Il mio account**: this proves that the dashboard user and the Authentik user are the same person. Alternatively the
+administrator can enable **automatic linking by email**: only do so if Authentik users cannot change their own email
+(the default user settings flow allows it), otherwise a technician could set an administrator's email and sign in in
+their place. After the first sign-in the Authentik identity counts, not the email. A user can be unlinked from
+**Utenti**; changing provider or application resets all links.
 
 ## Temporary administrator access
 

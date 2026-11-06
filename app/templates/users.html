@@ -15,7 +15,8 @@
   <div class="card table-wrap"><table>
     <tr><th>Utente</th><th>Ruolo</th><th>Stato</th><th></th></tr>
     {% for u in users %}<tr><td><b>{{ u.full_name or u.username }}</b><br><span class="muted small">{{ u.username }}{% if u.email %} · {{ u.email }}{% endif %}</span>
-      {% if u.must_change %}<br><span class="tag-update">password da cambiare al primo accesso</span>{% endif %}</td>
+      {% if u.must_change %}<br><span class="tag-update">password da cambiare al primo accesso</span>{% endif %}
+      {% if u.oidc_sub %}<br><span class="muted small">collegato al provider d'accesso</span>{% endif %}</td>
       <td>{{ ROLE_LABELS[u.role] }}{% if u.is_manager %}<br><span class="muted small">gestore del server</span>{% endif %}</td><td>{% if u.active %}<span class="badge s-ok">Attivo</span>{% else %}<span class="badge s-offline">Disattivato</span>{% endif %}</td>
       <td>{% if u.is_manager and u.id != user.id %}<span class="muted small">Solo il gestore può modificare il proprio account.</span>
         {% elif u.id != user.id %}
@@ -24,6 +25,8 @@
           <button class="btn ghost small">{{ 'Disattiva' if u.active else 'Riattiva' }}</button></form>
         {% if u.active %}<form class="inline" method="post" action="/utenti/{{ u.id }}/recupero"><input type="hidden" name="csrf" value="{{ csrf }}">
           <button class="btn ghost small" title="Crea un link con cui l'utente sceglie una password nuova">Link di recupero password</button></form>{% endif %}
+        {% if u.oidc_sub %}<form class="inline" method="post" action="/utenti/{{ u.id }}/scollega"><input type="hidden" name="csrf" value="{{ csrf }}">
+          <button class="btn ghost small" title="Al prossimo accesso con il provider si ricollega in base all'email">Scollega dal provider</button></form>{% endif %}
         </div>
         {% else %}<a class="small" href="/account">Cambia la tua password</a>{% endif %}</td></tr>{% endfor %}
   </table></div>
