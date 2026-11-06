@@ -15,7 +15,7 @@ from starlette.responses import JSONResponse, RedirectResponse, Response
 from starlette.routing import Route
 from starlette.templating import Jinja2Templates
 
-from . import db, notify, sanitize, secrets_store, updates
+from . import db, notify, oidc, sanitize, secrets_store, updates
 from .agent_api import is_online, ring
 from . import accounts
 from .security import (ROLE_LABELS, ROLES, can, hash_password, new_pair_code, new_setup_code,
@@ -316,7 +316,8 @@ def guard(permission="view"):
                 if request.url.path.endswith(".json"):
                     return JSONResponse({"error": "not found"}, status_code=404)
                 return render(request, "error.html", message="Non trovato.")
-            if user["must_change"] and request.url.path != "/account":
+            # chi è entrato col provider dell'azienda non ha usato la password iniziale
+            if user["must_change"] and not request.session.get("sso") and request.url.path != "/account":
                 return redirect("/account", "Prima di continuare scegli una password nuova, che conosci solo tu.", request)
             request.state.form = form
             request.state.user = user
@@ -376,17 +377,22 @@ async def setup(request: Request):
     return redirect("/", "Configurazione completata. Benvenuto!", request)
 
 
+def safe_next(next_url):
+    """Solo percorsi interni: niente "//sito", "/\\sito" o caratteri di controllo che i browser
+    potrebbero interpretare come un altro dominio."""
+    if (not isinstance(next_url, str) or not next_url.startswith("/") or next_url.startswith("//")
+            or "\\" in next_url or any(ord(ch) < 32 for ch in next_url)):
+        return "/"
+    return next_url
+
+
 async def login(request: Request):
     if not db.one("SELECT id FROM users LIMIT 1"):
         return redirect("/setup")
-    next_url = request.query_params.get("next", "/")
-    # Solo percorsi interni: niente "//sito", "/\\sito" o caratteri di controllo che i browser
-    # potrebbero interpretare come un altro dominio.
-    if (not next_url.startswith("/") or next_url.startswith("//") or "\\" in next_url
-            or any(ord(ch) < 32 for ch in next_url)):
-        next_url = "/"
+    next_url = safe_next(request.query_params.get("next", "/"))
     if request.method == "GET":
-        return render(request, "login.html", error=None, next=next_url, email_reset=accounts.email_enabled())
+        return render(request, "login.html", error=None, next=next_url, email_reset=accounts.email_enabled(),
+                      sso=_remembered_sso(request))
     form = await read_form(request)
     if form is None:
         return redirect("/login")
@@ -414,6 +420,182 @@ async def login(request: Request):
     if user["must_change"]:
         return redirect("/account", "Prima di continuare scegli una password nuova, che conosci solo tu.", request)
     return redirect(next_url)
+
+
+# ---------- accesso con il provider OpenID Connect dell'azienda (Authentik…) ----------
+
+SSO_COOKIE = "suite_sso"
+SSO_MAX_AGE = 10 * 60     # tempo per completare l'accesso sul provider
+
+
+def _remembered_sso(request):
+    """Pulsante del provider nella pagina di accesso: solo nel browser che ha già usato il link
+    dell'azienda (la pagina di accesso non elenca le aziende del server)."""
+    co = oidc.company_for_key(request.cookies.get(SSO_COOKIE))
+    if not co:
+        return None
+    return {"url": f"/accesso/{oidc.settings(co['id'])['oidc_key']}", "label": oidc.settings(co["id"])["label"],
+            "company": co["name"]}
+
+
+def _sso_redirect_uri(request):
+    return public_url(request).rstrip("/") + oidc.CALLBACK_PATH
+
+
+def _sso_error(request, text, status=400):
+    resp = render(request, "login.html", error=text, next="/", email_reset=accounts.email_enabled(),
+                  sso=_remembered_sso(request))
+    resp.status_code = status
+    return resp
+
+
+async def sso_start(request: Request):
+    if not db.one("SELECT id FROM users LIMIT 1"):
+        return redirect("/setup")
+    key = request.path_params["key"]
+    co = oidc.company_for_key(key)
+    if not co:
+        return _sso_error(request, "Link d'accesso non valido, oppure l'accesso con il provider è disattivato.", 404)
+    try:
+        url, pending = await asyncio.to_thread(oidc.start, co["id"], _sso_redirect_uri(request))
+    except oidc.OIDCError as e:
+        log.warning("Accesso con il provider di %s non avviato: %s", co["name"], e)
+        return _sso_error(request, f"Accesso con {oidc.settings(co['id'])['label']} non disponibile: {e}.", 502)
+    pending["next"] = safe_next(request.query_params.get("next", "/"))[:300]
+    request.session["oidc"] = pending
+    resp = RedirectResponse(url, status_code=303)
+    resp.set_cookie(SSO_COOKIE, key, max_age=365 * 86400, httponly=True, samesite="lax",
+                    secure=os.environ.get("SECURE_COOKIES", "1") == "1")
+    return resp
+
+
+async def sso_callback(request: Request):
+    # Niente limite ai tentativi qui: con il provider non si indovina nessuna password, e un provider
+    # configurato male non deve bloccare il login con la password di tutto l'ufficio (stesso IP).
+    pending = request.session.pop("oidc", None)
+    q = request.query_params
+    if not isinstance(pending, dict) or not isinstance(q.get("state"), str) \
+            or not secrets.compare_digest(q.get("state"), pending.get("state", "")):
+        return _sso_error(request, "Accesso non riuscito: richiesta scaduta o aperta in un'altra finestra. Riprova.")
+    if time.time() - pending.get("t", 0) > SSO_MAX_AGE:
+        return _sso_error(request, "Accesso non riuscito: sono passati troppi minuti. Riprova.")
+    co = db.company(pending.get("co"))
+    if pending.get("link"):
+        return await _sso_link_callback(request, pending, co, q)
+    if not co or co["suspended_at"]:
+        return _sso_error(request, "L'accesso della tua azienda è sospeso: contatta il gestore del server.", 403)
+    label = oidc.settings(co["id"])["label"]
+    if q.get("error"):
+        # l'utente ha annullato, o il provider non gli permette l'applicazione
+        return _sso_error(request, f"{label} non ha concesso l'accesso ({q.get('error')[:60]}).", 403)
+    try:
+        claims = await asyncio.to_thread(oidc.finish, pending, q.get("code"), _sso_redirect_uri(request))
+    except oidc.OIDCError as e:
+        log.warning("Accesso con il provider di %s non riuscito: %s", co["name"], e)
+        return _sso_error(request, f"Accesso con {label} non riuscito: {e}.", 502)
+    user, reason = oidc.find_user(co["id"], claims)
+    if not user:
+        log.info("Accesso con il provider di %s rifiutato: %s", co["name"], reason)
+        return _sso_error(request, f"Accesso con {label} rifiutato: {reason}.", 403)
+    log.info("Accesso di %s con il provider di %s", user["username"], co["name"])
+    request.session.clear()
+    request.session["uid"] = user["id"]
+    request.session["pw"] = pw_mark(user)
+    request.session["sso"] = co["id"]
+    return redirect(pending.get("next") or "/")
+
+
+@guard()
+async def sso_link_start(request: Request):
+    """«Il mio account»: chi è entrato con la password collega il proprio account del provider."""
+    user = request.state.user
+    co = user["company_id"]
+    if request.state.form.get("azione") == "scollega":
+        db.run("UPDATE users SET oidc_sub = NULL WHERE id = ?", user["id"])
+        return redirect("/account#sso", "Account scollegato dal provider.", request)
+    s = oidc.settings(co)
+    if not s["enabled"]:
+        return redirect("/account", "L'accesso con il provider non è attivo per la tua azienda.", request, error=True)
+    try:
+        url, pending = await asyncio.to_thread(oidc.start, co, _sso_redirect_uri(request))
+    except oidc.OIDCError as e:
+        return redirect("/account#sso", f"{s['label']} non disponibile: {e}.", request, error=True)
+    pending["link"] = user["id"]
+    request.session["oidc"] = pending
+    resp = RedirectResponse(url, status_code=303)
+    resp.set_cookie(SSO_COOKIE, s["oidc_key"], max_age=365 * 86400, httponly=True, samesite="lax",
+                    secure=os.environ.get("SECURE_COOKIES", "1") == "1")
+    return resp
+
+
+async def _sso_link_callback(request, pending, co, q):
+    user = current_user(request)
+    # stesso utente che ha avviato il collegamento, ancora collegato con la sua sessione
+    if not user or user["id"] != pending["link"] or not co or user["company_id"] != co["id"]:
+        return _sso_error(request, "Collegamento non riuscito: accedi di nuovo con la password e riprova.", 403)
+    label = oidc.settings(co["id"])["label"]
+    if q.get("error"):
+        return redirect("/account#sso", f"{label} non ha concesso l'accesso ({q.get('error')[:60]}).", request, error=True)
+    try:
+        claims = await asyncio.to_thread(oidc.finish, pending, q.get("code"), _sso_redirect_uri(request))
+    except oidc.OIDCError as e:
+        return redirect("/account#sso", f"Collegamento con {label} non riuscito: {e}.", request, error=True)
+    if not oidc.link(user["id"], co["id"], claims["sub"]):
+        return redirect("/account#sso", f"Questo account di {label} è già collegato a un altro utente della dashboard.",
+                        request, error=True)
+    log.info("Utente %s collegato al provider di %s", user["username"], co["name"])
+    who = claims.get("preferred_username") or claims.get("email") or ""
+    return redirect("/account#sso", f"Collegato a {label}" + (f" come {str(who)[:80]}" if who else "") +
+                    f": d'ora in poi puoi entrare con «Accedi con {label}».", request)
+
+
+@guard("settings")
+async def sso_settings(request: Request):
+    """L'amministratore dell'azienda collega il proprio provider OpenID Connect."""
+    form = request.state.form
+    co = request.state.user["company_id"]
+    action = form.get("azione", "salva")
+    if action == "disattiva":
+        db.set_csetting(co, "oidc_enabled", "0")
+        return redirect("/impostazioni#sso", "Accesso con il provider disattivato: resta il login con la password.", request)
+    old = oidc.settings(co)
+    issuer = form.get("oidc_issuer", "").strip()
+    client_id = form.get("oidc_client_id", "").strip()[:200]
+    secret = form.get("oidc_client_secret", "")
+    if issuer and not oidc.valid_issuer(issuer):
+        return redirect("/impostazioni#sso", "Indirizzo del provider non valido: deve iniziare con https://", request, error=True)
+    if old["oidc_issuer"] and (issuer != old["oidc_issuer"] or client_id != old["oidc_client_id"]):
+        oidc.unlink_all(co)   # altro provider o altra applicazione: le identità vecchie non valgono più
+    db.set_csetting(co, "oidc_issuer", issuer)
+    db.set_csetting(co, "oidc_client_id", client_id)
+    if secret:
+        db.set_csetting(co, "oidc_client_secret", secret.strip()[:500])
+    db.set_csetting(co, "oidc_label", " ".join(form.get("oidc_label", "").split())[:40])
+    db.set_csetting(co, "oidc_auto_email", "1" if form.get("oidc_auto_email") == "1" else "0")
+    oidc.ensure_key(co)
+    enable = form.get("oidc_enabled") == "1"
+    if enable or action == "prova":
+        if not (issuer and client_id and db.get_csetting(co, "oidc_client_secret")):
+            db.set_csetting(co, "oidc_enabled", "0")
+            return redirect("/impostazioni#sso", "Servono indirizzo del provider, Client ID e Client secret.", request, error=True)
+        try:
+            await asyncio.to_thread(oidc.discover, issuer, True)
+        except oidc.OIDCError as e:
+            db.set_csetting(co, "oidc_enabled", "0")
+            return redirect("/impostazioni#sso", f"Provider non collegato: {e}.", request, error=True)
+    db.set_csetting(co, "oidc_enabled", "1" if enable else "0")
+    if action == "prova":
+        return redirect("/impostazioni#sso", "Il provider risponde e la configurazione è corretta." +
+                        ("" if enable else " Spunta «Attiva» e salva per usarlo."), request)
+    return redirect("/impostazioni#sso", "Accesso con il provider attivo: usa il link d'accesso qui sotto." if enable
+                    else "Impostazioni del provider salvate.", request)
+
+
+@guard("users")
+async def user_sso_unlink(request: Request):
+    uid = request.path_params["uid"]
+    db.run("UPDATE users SET oidc_sub = NULL WHERE id = ?", uid)
+    return redirect("/utenti", "Utente scollegato dal provider: per entrare di nuovo con il provider dovrà ricollegarsi.", request)
 
 
 # ---------- recupero della password ----------
@@ -942,7 +1124,8 @@ async def account_page(request: Request):
             request.session["pw"] = pw_mark(db.one("SELECT password_hash FROM users WHERE id = ?", user["id"]))
             return redirect("/", "Password cambiata.", request) if user["must_change"] else \
                 redirect("/account", "Password cambiata.", request)
-    return render(request, "account.html", errors=errors)
+    s = oidc.settings(user["company_id"]) if user.get("company_id") else None
+    return render(request, "account.html", errors=errors, sso=s if s and s["enabled"] else None)
 
 
 @guard("users")
@@ -997,7 +1180,17 @@ async def settings_page(request: Request):
                   tg_chat_id=db.get_csetting(co, "telegram_chat_id", ""),
                   tg_events={k: (label, db.get_csetting(co, k, "1") == "1") for k, label in notify.EVENTS.items()},
                   upd=_update_status(co) if can(user, "server") else None,
+                  sso=_sso_settings(request, co),
                   mail=_mail_settings() if can(user, "server") else None)
+
+
+def _sso_settings(request, co):
+    s = oidc.settings(co)
+    s["secret_set"] = bool(s.pop("oidc_client_secret"))
+    s["redirect_uri"] = _sso_redirect_uri(request)
+    s["login_url"] = public_url(request).rstrip("/") + f"/accesso/{s['oidc_key']}" if s["oidc_key"] else None
+    s["linked"] = db.one("SELECT COUNT(*) AS n FROM users WHERE company_id = ? AND oidc_sub IS NOT NULL", co)["n"]
+    return s
 
 
 def _mail_settings():
@@ -1292,6 +1485,8 @@ routes = [
     Route("/login", login, methods=["GET", "POST"]),
     Route("/logout", logout, methods=["POST"]),
     Route("/recupero", reset_request, methods=["GET", "POST"]),
+    Route(oidc.CALLBACK_PATH, sso_callback),
+    Route("/accesso/{key}", sso_start),
     Route("/recupero/{token}", reset_use, methods=["GET", "POST"]),
     Route("/", dashboard),
     Route("/clienti", clients_list),
@@ -1325,5 +1520,8 @@ routes = [
     Route("/impostazioni/telegram", telegram_settings, methods=["POST"]),
     Route("/impostazioni/aggiornamenti", update_check, methods=["POST"]),
     Route("/impostazioni/email", email_settings, methods=["POST"]),
+    Route("/impostazioni/accesso", sso_settings, methods=["POST"]),
+    Route("/utenti/{uid:int}/scollega", user_sso_unlink, methods=["POST"]),
+    Route("/account/accesso", sso_link_start, methods=["POST"]),
     Route("/impianti/{pid:int}/ha-url", plant_ha_url, methods=["POST"]),
 ]

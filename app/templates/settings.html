@@ -48,6 +48,50 @@
   </form>
 </div>
 
+<div class="card" id="sso">
+  <h2>Accesso con {{ sso.label }}</h2>
+  <p class="muted small" style="margin-top:0">I tuoi utenti possono entrare con l'account del vostro provider OpenID Connect
+    (Authentik, Keycloak, Zitadel…). Il login con nome utente e password resta sempre disponibile. Entra solo chi esiste già tra i
+    tuoi <a href="/utenti">utenti</a> e ha collegato il proprio account: il provider non crea utenti e non decide i ruoli.</p>
+  <ol class="small" style="padding-left:18px;margin:0 0 6px">
+    <li>In Authentik: <b>Applicazioni → Crea con procedura guidata</b>, provider <b>OAuth2/OpenID</b>, tipo di client <b>Confidential</b>.</li>
+    <li>Come indirizzo di reindirizzamento (Redirect URI, modalità <i>Strict</i>) inserisci
+      <code>{{ sso.redirect_uri }}</code> <button type="button" class="btn ghost small copy" data-copy="{{ sso.redirect_uri }}">Copia</button></li>
+    <li>Scegli una chiave di firma (Signing Key) e lascia gli scope <code>openid</code>, <code>email</code>, <code>profile</code>.</li>
+    <li>Copia qui sotto l'<b>OpenID Configuration Issuer</b> dell'applicazione, il <b>Client ID</b> e il <b>Client secret</b>, poi <b>Prova collegamento</b>.</li>
+  </ol>
+  <form method="post" action="/impostazioni/accesso"><input type="hidden" name="csrf" value="{{ csrf }}">
+    <button name="azione" value="salva" tabindex="-1" aria-hidden="true" style="position:absolute;left:-9999px"></button>
+    <label class="check"><input type="checkbox" name="oidc_enabled" value="1" {{ 'checked' if sso.enabled }}> Attiva l'accesso con il provider</label>
+    <label for="oidc_issuer">Indirizzo del provider (issuer)</label>
+    <input id="oidc_issuer" name="oidc_issuer" value="{{ sso.oidc_issuer }}" placeholder="https://auth.tuodominio.it/application/o/assistenza/">
+    <label for="oidc_client_id">Client ID</label><input id="oidc_client_id" name="oidc_client_id" value="{{ sso.oidc_client_id }}" autocomplete="off">
+    <label for="oidc_client_secret">Client secret</label>
+    <input id="oidc_client_secret" name="oidc_client_secret" type="password" autocomplete="new-password"
+           placeholder="{{ 'impostato — lascia vuoto per non cambiarlo' if sso.secret_set else 'dalla pagina del provider' }}">
+    <label class="check" style="margin-top:14px"><input type="checkbox" name="oidc_auto_email" value="1" {{ 'checked' if sso.auto_email }}>
+      Collega in automatico gli utenti con la stessa email</label>
+    <p class="muted small" style="margin:2px 0 0">Senza questa spunta ogni utente si collega da solo, una volta, da «Il mio account» dopo
+      essere entrato con la password: è il modo più sicuro. Attivala solo se nel provider gli utenti <b>non possono cambiarsi l'email</b>
+      da soli (in Authentik lo permette il flusso delle impostazioni utente predefinito): altrimenti un tecnico potrebbe mettere
+      l'email di un amministratore ed entrare al suo posto.</p>
+    <label for="oidc_label">Nome del pulsante</label><input id="oidc_label" name="oidc_label" value="{{ sso.oidc_label }}" placeholder="Authentik">
+    {% if sso.login_url %}
+    <label>Link d'accesso della tua azienda</label>
+    <div class="row"><code class="grow" style="word-break:break-all">{{ sso.login_url }}</code>
+      <button type="button" class="btn ghost small copy" data-copy="{{ sso.login_url }}">Copia link</button></div>
+    <p class="muted small" style="margin:4px 0 0">Mandalo ai tuoi tecnici o mettilo tra i preferiti. La pagina di accesso non elenca le
+      aziende del server: il pulsante «Accedi con {{ sso.label }}» compare nei browser che hanno già usato questo link.
+      {% if sso.linked %}Utenti già collegati: {{ sso.linked }}.{% endif %}</p>
+    {% endif %}
+    <div class="row" style="margin-top:16px">
+      <button class="btn" name="azione" value="salva">Salva</button>
+      <button class="btn ghost" name="azione" value="prova">Prova collegamento</button>
+      {% if sso.enabled %}<button class="btn danger" name="azione" value="disattiva" data-confirm="Disattivare l'accesso con il provider?">Disattiva</button>{% endif %}
+    </div>
+  </form>
+</div>
+
 {% if mail %}
 <div class="card" id="email">
   <h2>Recupero della password via email</h2>
