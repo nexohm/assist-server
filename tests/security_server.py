@@ -369,6 +369,34 @@ page = admin.get(BASE + "/aziende").text
 check("Bianchi Elettrica" in page and "Cliente riservato Bianchi" not in page and "guasto X" not in page,
       "aziende: il gestore vede le aziende e i loro numeri, non i clienti né i ticket")
 
+# comunicazioni, avviso offline e utente di HA: nessun passaggio tra aziende
+form_post(admin, "/comunicazioni", "/comunicazioni", {"title": "Avviso di Rossi", "text": "solo per i clienti di Rossi", "plant": str(pa)})
+nid_a = db.execute("SELECT id FROM notices WHERE title = 'Avviso di Rossi'").fetchone()[0]
+form_post(bia, "/comunicazioni", "/comunicazioni", {"title": "Intrusa", "text": "x", "plant": [str(pa), str(pb)], "tutti": ""})
+form_post(bia, "/comunicazioni", "/comunicazioni", {"title": "A tutti", "text": "x", "tutti": "1"})
+targets = db.execute("SELECT np.plant_id FROM notice_plants np JOIN notices n ON n.id = np.notice_id "
+                     "WHERE n.company_id = (SELECT company_id FROM users WHERE username = 'bianchi')").fetchall()
+form_post(bia, f"/comunicazioni/{nid_a}/elimina", "/comunicazioni", {})
+form_post(bia, f"/impianti/{pa}/offline", "/", {"offline_minutes": "999"})
+seen_b = requests.get(BASE + "/api/agent/notices", headers=agent_headers(paired["token"])).json()
+check(not db.execute("SELECT 1 FROM notices WHERE title = 'Intrusa'").fetchone()
+      and all(t[0] not in (pa, pb) for t in targets)
+      and db.execute("SELECT 1 FROM notices WHERE id = ?", (nid_a,)).fetchone()
+      and db.execute("SELECT offline_minutes FROM plants WHERE id = ?", (pa,)).fetchone()[0] is None
+      and "Avviso di Rossi" not in bia.get(BASE + "/comunicazioni").text
+      and "Avviso di Rossi" not in json.dumps(seen_b),
+      "aziende: comunicazioni e avviso offline restano dentro la propria azienda (pagine e API dell'agente)")
+form_post(let, "/comunicazioni", "/comunicazioni", {"title": "Dal lettore", "text": "x", "tutti": "1"})
+check(not db.execute("SELECT 1 FROM notices WHERE title = 'Dal lettore'").fetchone(), "comunicazioni: il ruolo lettura non può inviarle")
+tid_u = requests.post(BASE + "/api/agent/tickets", headers=agent_headers(ta),
+                      json={"title": "da utente", "user": {"id": "<script>", "name": "<b>Maria</b>"}}).json()["ticket_id"]
+tid_v = requests.post(BASE + "/api/agent/tickets", headers=agent_headers(ta),
+                      json={"title": "da utente 2", "user": {"id": "b" * 32, "name": "<img src=x onerror=alert(1)>"}}).json()["ticket_id"]
+row_u = db.execute("SELECT opened_by, opened_by_id FROM tickets WHERE id = ?", (tid_u,)).fetchone()
+page_v = admin.get(BASE + f"/ticket/{tid_v}").text
+check(row_u == (None, None) and "<img src=x" not in page_v and "&lt;img src=x" in page_v,
+      "ticket: utente di HA con id non valido ignorato, nome mostrato come testo")
+
 # solo il gestore: elenco delle aziende, indirizzo pubblico e aggiornamenti del server
 check(refused(bia, "/aziende", "/", {"name": "Terza", "username": "terzo", "password": "passwordlunga1"}),
       "aziende: l'amministratore di un'azienda non può crearne altre")

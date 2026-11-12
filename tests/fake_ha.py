@@ -60,8 +60,19 @@ WS_RESULTS = {
 USERS = {}
 
 
+# Utenti della casa: il proprietario (amministratore) e un familiare senza permessi di amministratore
+HOUSE_USERS = [
+    {"id": "a" * 32, "name": "Roberta Bianchi", "is_owner": True, "is_active": True, "system_generated": False, "group_ids": ["system-admin"]},
+    {"id": "b" * 32, "name": "Maria", "is_owner": False, "is_active": True, "system_generated": False, "group_ids": ["system-users"]},
+    {"id": "c" * 32, "name": "Supervisor", "is_owner": False, "is_active": True, "system_generated": True, "group_ids": ["system-admin"]},
+]
+
+
 def ws_users(msg):
     t = msg["type"]
+    if t == "config/auth/list":
+        return HOUSE_USERS + [{"id": u["id"], "name": u["name"], "is_owner": False, "is_active": True,
+                               "system_generated": False, "group_ids": u["group_ids"]} for u in USERS.values()]
     if t == "config/auth/create":
         uid = uuid.uuid4().hex
         USERS[uid] = {"id": uid, "name": msg.get("name"), "group_ids": msg.get("group_ids"),

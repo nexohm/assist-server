@@ -72,17 +72,23 @@ cifrato in HTTPS. L'agente esegue solo una lista chiusa di comandi e non può mo
 - **Clienti e impianti**: anagrafica, rinomina ed eliminazione (riscrivendo il nome), codice di abbinamento con
   pulsante *Copia*, revoca e nuovo abbinamento, collegamento all'Home Assistant del cliente.
 - **Diagnostica**: entità non disponibili o orfane, batterie scariche, aggiornamenti disponibili, automazioni
-  spente, spazio su disco, età dell'ultimo backup.
+  spente, spazio su disco, età dell'ultimo backup. Le entità sono elencate per tipo, col nome e l'id.
 - **Comandi remoti**: diagnostica immediata e ping, con storico.
-- **Ticket**: richieste dei clienti con diagnostica allegata, risposte, stato e assegnazione a un tecnico.
+- **Ticket**: richieste dei clienti con diagnostica allegata, risposte, stato e assegnazione a un tecnico; si vede
+  quale utente di Home Assistant ha aperto la richiesta.
+- **Comunicazioni** ai clienti (novità, manutenzioni, nuove funzioni): a uno, più o tutti gli impianti, con la
+  conferma di ricezione; il cliente le legge nel pannello Assistenza e riceve una notifica.
 - **Accesso amministratore temporaneo** all'Home Assistant del cliente, solo se il cliente lo concede.
 - **Utenti** con ruoli (amministratore, tecnico, sola lettura) e **più aziende** sullo stesso server.
 - **Accesso con Authentik** o un altro provider OpenID Connect, scelto da ogni azienda (oltre alla password).
-- **Notifiche Telegram**: nuovi ticket, risposte, impianti offline o in stato critico.
+- **Notifiche Telegram**: nuovi ticket, risposte, impianti offline o in stato critico; i minuti prima
+  dell'avviso offline si scelgono per azienda e per singolo impianto.
 - **Avvisi di aggiornamento** del server e degli agenti; conferme animate a ogni salvataggio.
 
 **Pannello Assistenza del cliente** (nell'add-on, vedi [`nexohm/ha-addons`](https://github.com/nexohm/ha-addons))
 - schede **Richieste**, **Impianto**, **Preferenze**;
+- visibile a tutti gli utenti di casa: chi non è amministratore apre richieste e vede solo le sue;
+- **comunicazioni** dell'installatore in cima alla pagina;
 - richieste di assistenza e risposte, con notifiche in Home Assistant o sul telefono;
 - **accesso remoto a tempo** (1 ora, 4 ore, 24 ore, 7 giorni o senza scadenza) e sospensione in un clic;
 - **entità escluse** dai controlli (anche con `*`) oppure controllo solo delle entità con certe **etichette**;
@@ -199,6 +205,10 @@ stati critici. In **Impostazioni → Notifiche Telegram**:
 2. incollalo e salva;
 3. apri il tuo bot, premi **Avvia**, poi **Rileva chat ID**;
 4. **Invia prova**.
+
+Nella stessa sezione scegli dopo quanti minuti senza contatto arriva l'avviso **offline** (predefinito 3, fino a
+24 ore). Un impianto con una connessione instabile può avere un valore suo: lo cambi nella sua pagina, sotto
+*Notifica offline*.
 
 ## Password dimenticata ed email
 

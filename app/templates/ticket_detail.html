@@ -4,7 +4,7 @@
 {% block content %}
 <div class="head"><div><p class="muted small" style="margin:0"><a href="/ticket">Ticket</a> / #{{ t.id }}</p><h1>{{ t.title }}</h1>
   <div class="row small"><span class="badge s-{{ t.status }}">{{ TICKET_STATUS[t.status] }}</span>
-    <span class="muted">aperto il {{ t.created_at | ts }}</span></div></div></div>
+    <span class="muted">aperto il {{ t.created_at | ts }}{% if t.opened_by %} da <b>{{ t.opened_by }}</b>{% endif %}</span></div></div></div>
 <div class="grid g-side">
   <div class="stack">
     {% for m in messages %}
@@ -31,6 +31,7 @@
     <div class="card"><h2>Cliente</h2>
       <dl class="kv"><dt>Cliente</dt><dd><a href="/clienti/{{ t.client_id }}">{{ t.client_name }}</a></dd>
         <dt>Impianto</dt><dd><a href="/impianti/{{ t.plant_id }}">{{ t.plant_name }}</a></dd>
+        {% if t.opened_by %}<dt>Aperto da</dt><dd>{{ t.opened_by }} <span class="muted small">(utente di Home Assistant)</span></dd>{% endif %}
         <dt>Recapito</dt><dd>{{ t.contact or t.client_phone or '—' }}</dd>{% if t.client_email %}<dt>Email</dt><dd>{{ t.client_email }}</dd>{% endif %}</dl></div>
     <div class="card"><h2>Diagnostica all'apertura</h2>{{ diagnostics(t.diag) }}</div>
   </div>

@@ -40,6 +40,11 @@
     {% for key, (label, on) in tg_events.items() %}
     <label class="check"><input type="checkbox" name="{{ key }}" value="1" {{ 'checked' if on }}> {{ label }}</label>
     {% endfor %}
+    <label for="offline_minutes">Avviso «offline» dopo</label>
+    <div class="row"><input id="offline_minutes" name="offline_minutes" type="number" inputmode="numeric" style="width:110px"
+        min="{{ offline_range[0] }}" max="{{ offline_range[1] }}" value="{{ offline_minutes }}" required> <span>minuti senza contatto</span></div>
+    <p class="muted small">Vale per tutti gli impianti, da {{ offline_range[0] }} minuti a {{ offline_range[1] // 60 }} ore.
+      Un impianto con la connessione instabile può avere un valore suo: lo cambi nella sua pagina.</p>
     <div class="row" style="margin-top:16px">
       <button class="btn" name="azione" value="salva">Salva</button>
       <button class="btn ghost" name="azione" value="prova">Invia prova</button>

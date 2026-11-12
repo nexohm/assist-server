@@ -53,6 +53,21 @@ def _dict(value):
     return value if isinstance(value, dict) else {}
 
 
+ENTITY_ID = re.compile(r"[a-z0-9_]+\.[a-z0-9_]+")
+
+
+def entity_names(value):
+    """Nomi leggibili delle entità di un problema ({entity_id: nome}), mandati dagli agenti recenti."""
+    if not isinstance(value, dict):
+        return {}
+    out = {}
+    for eid, name in list(value.items())[:MAX_ITEMS]:
+        name = text(name, 120)
+        if isinstance(eid, str) and ENTITY_ID.fullmatch(eid) and name:
+            out[eid] = name
+    return out
+
+
 def diagnostics(value):
     """Diagnostica nella forma prevista da PROTOCOL.md; None se non è un oggetto."""
     if not isinstance(value, dict):
@@ -71,6 +86,7 @@ def diagnostics(value):
             "code": text(issue.get("code"), 40),
             "message": text(issue.get("message"), 500) or "—",
             "items": [t for t in (text(i, 200) for i in (items if isinstance(items, list) else [])[:MAX_ITEMS]) if t],
+            "names": entity_names(issue.get("names")),
         })
     return {
         "status": status if status in STATUSES else "attenzione",
@@ -86,6 +102,19 @@ def diagnostics(value):
         },
         "issues": issues,
     }
+
+
+def ha_user(value):
+    """Utente di Home Assistant che scrive dal pannello dell'add-on: id (32 caratteri esadecimali,
+    come quelli di Home Assistant) e nome visualizzato. (None, None) se manca o non è valido."""
+    if not isinstance(value, dict):
+        return None, None
+    uid = value.get("id")
+    uid = uid if isinstance(uid, str) and re.fullmatch(r"[0-9a-f]{32}", uid) else None
+    name = text(value.get("name"), 60)
+    if name:
+        name = " ".join("".join(ch for ch in name if ch.isprintable()).split()) or None
+    return (uid, name) if uid else (None, None)
 
 
 def admin_state(value):

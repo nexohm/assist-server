@@ -74,17 +74,23 @@ HTTPS. The agent only runs a closed list of commands and cannot change the confi
 - **Customers and systems**: contact details, rename and delete (by retyping the name), pairing code with a
   *Copy* button, revoke and re-pair, link to the customer's Home Assistant.
 - **Diagnostics**: unavailable or orphaned entities, low batteries, pending updates, disabled automations, disk
-  space, age of the last backup.
+  space, age of the last backup. Entities are listed by type, with their name and id.
 - **Remote commands**: on-demand diagnostics and ping, with history.
-- **Tickets**: customer requests with diagnostics attached, replies, status and assignment to a technician.
+- **Tickets**: customer requests with diagnostics attached, replies, status and assignment to a technician; shows
+  which Home Assistant user opened the request.
+- **Announcements** to customers (news, planned maintenance, new features): to one, several or all systems, with
+  delivery confirmation; the customer reads them in the Support panel and gets a notification.
 - **Temporary administrator access** to the customer's Home Assistant, only if the customer grants it.
 - **Users** with roles (administrator, technician, read-only) and **several companies** on one server.
 - **Sign-in with Authentik** or another OpenID Connect provider, chosen by each company (besides passwords).
-- **Telegram notifications**: new tickets, replies, systems offline or critical.
+- **Telegram notifications**: new tickets, replies, systems offline or critical; the minutes before the offline
+  alert are chosen per company and per system.
 - **Update notices** for the server and the agents; animated confirmations on every save.
 
 **Customer's Support panel** (in the add-on, see [`nexohm/ha-addons`](https://github.com/nexohm/ha-addons))
 - **Requests**, **System** and **Preferences** tabs;
+- visible to every user of the house: non-administrators open requests and see only their own;
+- installer **announcements** at the top of the page;
 - support requests and replies, with notifications in Home Assistant or on the phone;
 - **time-limited remote access** (1 hour, 4 hours, 24 hours, 7 days or no expiry) and one-click suspension;
 - **excluded entities** (wildcards allowed) or checking only entities with given **labels**;
@@ -202,6 +208,10 @@ on Telegram. In **Impostazioni → Notifiche Telegram**:
 2. paste it and save;
 3. open your bot, press **Start**, then **Rileva chat ID** (Detect chat ID);
 4. **Invia prova** (Send test).
+
+In the same section choose after how many minutes without contact the **offline** alert is sent (default 3, up to
+24 hours). A system with an unstable connection can have its own value: change it on its page, under
+*Notifica offline*.
 
 ## Forgotten passwords and email
 

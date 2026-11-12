@@ -65,8 +65,11 @@ Risposta:
 
 ```json
 { "ok": true, "pending_commands": 0, "tickets_updated": "2026-10-20T14:05:00+00:00", "admin_requested": null,
-  "server_name": "Rossi Impianti", "brand_color": "#0f766e" }
+  "notices": "3-17", "server_name": "Rossi Impianti", "brand_color": "#0f766e" }
 ```
+
+`notices` (dal server 0.2.8) è l'impronta delle comunicazioni dell'installatore per l'impianto (`null` se non
+ce ne sono): quando cambia, l'agente le rilegge con `GET /api/agent/notices` (vedi sezione 5).
 
 `tickets_updated` (dal server 0.2.6) è l'ultima modifica ai ticket dell'impianto: quando cambia,
 l'agente rilegge i ticket e avvisa il cliente delle risposte dell'installatore.
@@ -75,7 +78,8 @@ L'agente lo invia ogni `heartbeat_seconds` (default 60). `consent_until` è la s
 remoto scelta dal cliente (campo facoltativo, aggiunto con l'agente 0.1.3): allo scadere l'agente
 manda `consent: false` da solo. La diagnostica completa viaggia
 ogni `diagnostics_minutes` (default 15) o quando richiesta da un comando.
-Il server considera l'impianto **offline** se non riceve nulla da più di 3 minuti.
+Il server considera l'impianto **offline** se non riceve nulla da più di 3 minuti. L'avviso Telegram
+all'installatore parte invece dopo i minuti scelti dall'azienda o per il singolo impianto (da 3 minuti a 24 ore).
 
 `admin` (dall'agente 0.1.8) è lo stato dell'accesso amministratore concesso dal cliente: **non contiene
 mai la password**. `admin_requested` (dal server 0.2.7) è la data della richiesta dell'installatore
@@ -91,9 +95,13 @@ ancora in attesa: l'agente la mostra al cliente, che può concedere l'accesso o 
   "summary": { "entities": 412, "unavailable": 3, "low_battery": 1, "updates": 2, "automations_off": 0, "excluded": 4 },
   "system": { "ha_version": "…", "os_version": "…", "disk_used_gb": 12.1, "disk_total_gb": 58.0,
               "last_backup": "2026-10-17T03:00:00+00:00", "last_backup_age_days": 1 },
-  "issues": [ { "severity": "critico|attenzione|info", "code": "unavailable_entities", "message": "…", "items": ["light.cucina", "…"] } ]
+  "issues": [ { "severity": "critico|attenzione|info", "code": "unavailable_entities", "message": "…", "items": ["light.cucina", "…"],
+                "names": { "light.cucina": "Luce cucina" } } ]
 }
 ```
+
+`names` (facoltativo, dall'agente 0.1.9) dà il nome leggibile delle entità elencate in `items`: la dashboard
+le mostra raggruppate per tipo, col nome e l'id sotto.
 
 ## 3. Comandi (long-polling)
 
@@ -127,13 +135,28 @@ Aperto dal cliente dal pannello dell'add-on:
 `POST /api/agent/tickets`
 
 ```json
-{ "title": "Le tapparelle del soggiorno non rispondono", "description": "…", "contact": "333 1234567", "diagnostics": { … } }
+{ "title": "Le tapparelle del soggiorno non rispondono", "description": "…", "contact": "333 1234567", "diagnostics": { … },
+  "user": { "id": "<id utente di Home Assistant, 32 caratteri esadecimali>", "name": "Maria" } }
 ```
 
-La diagnostica viene allegata automaticamente se il consenso è attivo.
+La diagnostica viene allegata automaticamente se il consenso è attivo. `user` (facoltativo, dall'agente 0.1.9) è
+l'utente di Home Assistant che scrive dal pannello, anche non amministratore: il server lo mostra all'installatore.
 
-- `GET /api/agent/tickets` → ticket dell'impianto con i messaggi (così il cliente vede le risposte)
-- `POST /api/agent/tickets/{id}/messages` → `{ "text": "…" }` risposta del cliente
+- `GET /api/agent/tickets` → ticket dell'impianto con i messaggi (così il cliente vede le risposte); dal server
+  0.2.8 ogni ticket ha anche `opened_by` e `opened_by_id`, così l'agente mostra a un utente non amministratore
+  solo le sue richieste
+- `POST /api/agent/tickets/{id}/messages` → `{ "text": "…", "user": { … } }` risposta del cliente
+
+## 5. Comunicazioni dell'installatore
+
+`GET /api/agent/notices` (dal server 0.2.8) → le ultime 20 comunicazioni scritte dall'installatore per l'impianto:
+
+```json
+{ "key": "3-17", "notices": [ { "id": 17, "title": "…", "text": "…", "author_name": "Mario Rossi", "created_at": "…" } ] }
+```
+
+Il server segna come ricevute quelle restituite. L'agente le mostra in cima al pannello a tutti gli utenti di casa
+e notifica il cliente una volta per ogni comunicazione nuova.
 
 ## Codici di risposta
 

@@ -165,6 +165,7 @@ async def report(request: Request):
     last_ticket = db.one("SELECT MAX(updated_at) AS ts FROM tickets WHERE plant_id = ?", plant["id"])
     requested = db.one("SELECT admin_requested_at, admin_requested_by FROM plants WHERE id = ?", plant["id"])
     return JSONResponse({"ok": True, "pending_commands": pending["n"],
+                         "notices": notices_key(plant["id"]),
                          "admin_requested": requested["admin_requested_at"],
                          "admin_requested_by": requested["admin_requested_by"] if requested["admin_requested_at"] else None,
                          "tickets_updated": last_ticket["ts"],
@@ -272,18 +273,20 @@ async def tickets(request: Request):
         if recent["n"] >= MAX_TICKETS_PER_DAY:
             return error(429, "troppe richieste aperte nelle ultime 24 ore: riprova più tardi")
         diagnostics = sanitize.diagnostics(data.get("diagnostics")) if plant["consent"] else None
+        # utente di Home Assistant che apre la richiesta (anche non amministratore): lo vede l'installatore
+        user_id, user_name = sanitize.ha_user(data.get("user"))
         ts = db.now()
-        tid = db.run("INSERT INTO tickets(plant_id, title, contact, diagnostics, created_at, updated_at) "
-                     "VALUES(?, ?, ?, ?, ?, ?)", plant["id"], title, sanitize.text(data.get("contact"), 200),
-                     json.dumps(diagnostics) if diagnostics else None, ts, ts)
+        tid = db.run("INSERT INTO tickets(plant_id, title, contact, diagnostics, opened_by, opened_by_id, created_at, updated_at) "
+                     "VALUES(?, ?, ?, ?, ?, ?, ?, ?)", plant["id"], title, sanitize.text(data.get("contact"), 200),
+                     json.dumps(diagnostics) if diagnostics else None, user_name, user_id, ts, ts)
         if description:
             db.run("INSERT INTO ticket_messages(ticket_id, author_type, author_name, text, created_at) "
-                   "VALUES(?, 'cliente', 'Cliente', ?, ?)", tid, description, ts)
-        notify.new_ticket(tid, plant["id"], title, description)
+                   "VALUES(?, 'cliente', ?, ?, ?)", tid, user_name or "Cliente", description, ts)
+        notify.new_ticket(tid, plant["id"], title, description, user_name)
         return JSONResponse({"ticket_id": tid})
 
     # chi segue la richiesta: il cliente vede nelle notifiche il nome del tecnico
-    rows = db.all_("SELECT t.id, t.title, t.status, t.created_at, t.updated_at, "
+    rows = db.all_("SELECT t.id, t.title, t.status, t.created_at, t.updated_at, t.opened_by, t.opened_by_id, "
                    "COALESCE(NULLIF(TRIM(u.full_name), ''), u.username) AS assigned_name "
                    "FROM tickets t LEFT JOIN users u ON u.id = t.assigned_to WHERE t.plant_id = ? "
                    "ORDER BY t.updated_at DESC LIMIT 50", plant["id"])
@@ -307,20 +310,53 @@ async def ticket_message(request: Request):
     text = sanitize.text(data.get("text"), 5000)
     if not text:
         return error(400, "messaggio vuoto")
+    _, user_name = sanitize.ha_user(data.get("user"))
     ts = db.now()
     db.run("INSERT INTO ticket_messages(ticket_id, author_type, author_name, text, created_at) "
-           "VALUES(?, 'cliente', 'Cliente', ?, ?)", ticket["id"], text, ts)
+           "VALUES(?, 'cliente', ?, ?, ?)", ticket["id"], user_name or "Cliente", text, ts)
     # Se il cliente riscrive su un ticket chiuso, lo riapriamo.
     status = "aperto" if ticket["status"] == "chiuso" else ticket["status"]
     db.run("UPDATE tickets SET updated_at = ?, status = ? WHERE id = ?", ts, status, ticket["id"])
-    notify.client_reply(ticket["id"], plant["id"], ticket["title"], text)
+    notify.client_reply(ticket["id"], plant["id"], ticket["title"], text, user_name)
     return JSONResponse({"ok": True})
 
 
-def is_online(plant) -> bool:
+ONLINE_MINUTES = 3   # senza contatto da più di così, l'impianto risulta offline nella dashboard
+
+
+def seen_within(plant, minutes) -> bool:
     seen = db.parse_ts(plant.get("last_seen"))
     return bool(seen and plant.get("paired_at") and not plant.get("revoked")
-                and datetime.now(timezone.utc) - seen < timedelta(minutes=3))
+                and datetime.now(timezone.utc) - seen < timedelta(minutes=minutes))
+
+
+# ---------------------------------------------------------------- comunicazioni dell'installatore
+
+MAX_NOTICES = 20   # quante ne vede il cliente nel pannello (le più recenti)
+
+
+def notices_key(plant_id):
+    """Impronta delle comunicazioni di un impianto: cambia quando ne arriva una nuova o ne viene
+    eliminata una. Se cambia, l'agente le rilegge con GET /api/agent/notices."""
+    row = db.one("SELECT COUNT(*) AS n, MAX(notice_id) AS last FROM notice_plants WHERE plant_id = ?", plant_id)
+    return f"{row['n']}-{row['last'] or 0}" if row["n"] else None
+
+
+async def notices(request: Request):
+    plant, err = authenticate(request)
+    if err:
+        return err
+    rows = db.all_("SELECT n.id, n.title, n.text, n.author_name, n.created_at FROM notice_plants np "
+                   "JOIN notices n ON n.id = np.notice_id WHERE np.plant_id = ? ORDER BY n.id DESC LIMIT ?",
+                   plant["id"], MAX_NOTICES)
+    if rows:
+        db.run(f"UPDATE notice_plants SET delivered_at = ? WHERE plant_id = ? AND delivered_at IS NULL "
+               f"AND notice_id IN ({','.join('?' * len(rows))})", db.now(), plant["id"], *[r["id"] for r in rows])
+    return JSONResponse({"notices": rows, "key": notices_key(plant["id"])})
+
+
+def is_online(plant) -> bool:
+    return seen_within(plant, ONLINE_MINUTES)
 
 
 routes = [
@@ -330,4 +366,5 @@ routes = [
     Route("/api/agent/commands/{cid:int}/result", command_result, methods=["POST"]),
     Route("/api/agent/tickets", tickets, methods=["GET", "POST"]),
     Route("/api/agent/tickets/{tid:int}/messages", ticket_message, methods=["POST"]),
+    Route("/api/agent/notices", notices, methods=["GET"]),
 ]

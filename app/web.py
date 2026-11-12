@@ -81,11 +81,48 @@ def asset(name):
 
 templates.env.filters["ts"] = fmt_ts
 templates.env.filters["ago"] = ago
+templates.env.filters["minutes"] = notify.fmt_minutes
 templates.env.globals.update(agent_outdated=updates.agent_outdated, latest_agent=updates.latest_agent,
                              TICKET_STATUS=TICKET_STATUS, COMMAND_STATUS=COMMAND_STATUS,
                              ROLE_LABELS=ROLE_LABELS, ALLOWED_COMMANDS=ALLOWED_COMMANDS,
                              COMMAND_LABELS={**ALLOWED_COMMANDS, **ADMIN_COMMANDS}, can=can,
                              is_online=is_online, asset=asset)
+
+
+# Nomi dei tipi di entità di Home Assistant, per raggruppare gli elenchi della diagnostica
+DOMAIN_LABELS = {
+    "sensor": "Sensori", "binary_sensor": "Sensori binari", "light": "Luci", "switch": "Interruttori",
+    "cover": "Tapparelle e tende", "climate": "Clima", "media_player": "Lettori multimediali", "camera": "Telecamere",
+    "lock": "Serrature", "fan": "Ventilatori", "vacuum": "Aspirapolvere", "button": "Pulsanti", "number": "Numeri",
+    "select": "Selezioni", "device_tracker": "Posizione", "person": "Persone", "automation": "Automazioni",
+    "script": "Script", "scene": "Scene", "update": "Aggiornamenti", "event": "Eventi", "weather": "Meteo",
+    "water_heater": "Scaldacqua", "alarm_control_panel": "Allarmi", "siren": "Sirene", "valve": "Valvole",
+    "humidifier": "Umidificatori", "remote": "Telecomandi", "text": "Testi", "image": "Immagini",
+}
+ENTITY_ID = re.compile(r"[a-z0-9_]+\.[a-z0-9_]+")
+
+
+def issue_groups(issue):
+    """Elementi di un problema della diagnostica pronti da mostrare. Gli id delle entità
+    (sensor.iphone_di_maria_steps) diventano righe col nome leggibile e l'id sotto, raggruppate per tipo;
+    gli altri elementi (batterie, aggiornamenti…) restano righe di testo semplice."""
+    names = issue.get("names") or {}
+    groups, plain = {}, []
+    for item in issue.get("items") or []:
+        if ENTITY_ID.fullmatch(item):
+            domain, obj = item.split(".", 1)
+            name = names.get(item) or obj.replace("_", " ").strip().capitalize()
+            groups.setdefault(domain, []).append({"name": name, "id": item})
+        else:
+            plain.append({"name": item, "id": None})
+    out = [{"label": DOMAIN_LABELS.get(d, d.replace("_", " ").capitalize()), "rows": sorted(r, key=lambda x: x["name"].lower())}
+           for d, r in sorted(groups.items(), key=lambda kv: (-len(kv[1]), kv[0]))]
+    if plain:
+        out.append({"label": None, "rows": plain})
+    return out
+
+
+templates.env.globals["issue_groups"] = issue_groups
 
 
 def pw_mark(user):
@@ -279,6 +316,7 @@ OWNERSHIP = {
     "uid": "SELECT 1 FROM users WHERE id = ? AND company_id = ?",
     "cmd": ("SELECT 1 FROM commands m JOIN plants p ON p.id = m.plant_id JOIN clients c ON c.id = p.client_id "
             "WHERE m.id = ? AND c.company_id = ?"),
+    "nid": "SELECT 1 FROM notices WHERE id = ? AND company_id = ?",
 }
 
 
@@ -869,8 +907,13 @@ async def plant_detail(request: Request):
     tickets = db.all_("SELECT * FROM tickets WHERE plant_id = ? ORDER BY updated_at DESC LIMIT 20", plant["id"])
     # La password dell'accesso amministratore si mostra solo a chi può usarla (non al ruolo lettura)
     admin_secret = secrets_store.get(plant["id"]) if can(request.state.user, "edit") else None
+    co = request.state.user["company_id"]
     return render(request, "plant_detail.html", plant=plant, commands=commands, tickets=tickets, admin_secret=admin_secret,
-                  now_ts=time.time())
+                  now_ts=time.time(), company_offline=notify.company_offline_minutes(co),
+                  offline_range=(notify.OFFLINE_MIN, notify.OFFLINE_MAX), telegram_on=notify.configured(co),
+                  notices=db.all_("SELECT n.id, n.title, n.created_at, np.delivered_at FROM notice_plants np "
+                                  "JOIN notices n ON n.id = np.notice_id WHERE np.plant_id = ? ORDER BY n.id DESC LIMIT 5",
+                                  plant["id"]))
 
 
 @guard()
@@ -920,6 +963,22 @@ async def plant_rename(request: Request):
         return redirect(f"/impianti/{pid}", "Il nome dell'impianto non può essere vuoto.", request, error=True)
     db.run("UPDATE plants SET name = ? WHERE id = ?", name, pid)
     return redirect(f"/impianti/{pid}", "Nome dell'impianto aggiornato.", request)
+
+
+@guard("edit")
+async def plant_offline(request: Request):
+    """Minuti senza contatto prima dell'avviso «offline» per questo impianto (vuoto = quelli dell'azienda)."""
+    pid = request.path_params["pid"]
+    raw = request.state.form.get("offline_minutes", "").strip()
+    if not raw:
+        db.run("UPDATE plants SET offline_minutes = NULL WHERE id = ?", pid)
+        return redirect(f"/impianti/{pid}#offline", "Avviso offline: torna il valore dell'azienda.", request)
+    minutes = notify.parse_minutes(raw)
+    if minutes is None:
+        return redirect(f"/impianti/{pid}#offline", f"Scrivi un numero di minuti tra {notify.OFFLINE_MIN} e {notify.OFFLINE_MAX}, "
+                        "oppure lascia vuoto.", request, error=True)
+    db.run("UPDATE plants SET offline_minutes = ? WHERE id = ?", minutes, pid)
+    return redirect(f"/impianti/{pid}#offline", f"Avviso offline dopo {notify.fmt_minutes(minutes)} senza contatto.", request)
 
 
 @guard("settings")
@@ -1056,6 +1115,90 @@ async def ticket_reply(request: Request):
     return redirect(f"/ticket/{tid}", "Ticket aggiornato.", request)
 
 
+# ---------- comunicazioni ai clienti ----------
+# L'installatore scrive una comunicazione (novità, manutenzione programmata, nuove funzioni…) a uno o
+# più impianti: il cliente la vede nel pannello Assistenza di Home Assistant e riceve una notifica.
+
+NOTICE_TITLE_MAX, NOTICE_TEXT_MAX = 120, 2000
+
+
+def _notice_targets(company_id):
+    """Impianti collegati dell'azienda, raggruppati per cliente: tra questi si scelgono i destinatari."""
+    rows = db.all_("SELECT p.id, p.name, c.id AS client_id, c.name AS client_name FROM plants p "
+                   "JOIN clients c ON c.id = p.client_id WHERE c.company_id = ? AND p.paired_at IS NOT NULL "
+                   "AND p.revoked = 0 ORDER BY c.name, p.name", company_id)
+    groups = []
+    for r in rows:
+        if not groups or groups[-1]["client_id"] != r["client_id"]:
+            groups.append({"client_id": r["client_id"], "client_name": r["client_name"], "plants": []})
+        groups[-1]["plants"].append(r)
+    return groups
+
+
+def _notices_render(request, errors=None, form_data=None):
+    co = request.state.user["company_id"]
+    notices = db.all_("SELECT n.*, COUNT(np.plant_id) AS targets, COUNT(np.delivered_at) AS delivered "
+                      "FROM notices n LEFT JOIN notice_plants np ON np.notice_id = n.id WHERE n.company_id = ? "
+                      "GROUP BY n.id ORDER BY n.id DESC LIMIT 100", co)
+    for n in notices:
+        n["plants"] = db.all_("SELECT p.id, p.name, c.name AS client_name, np.delivered_at FROM notice_plants np "
+                              "JOIN plants p ON p.id = np.plant_id JOIN clients c ON c.id = p.client_id "
+                              "WHERE np.notice_id = ? ORDER BY c.name, p.name", n["id"])
+    selected = set()
+    pre = request.query_params.get("impianto", "")
+    if form_data is not None:
+        selected = {int(v) for v in form_data.getlist("plant") if v.isdigit()}
+    elif pre.isdigit():
+        selected = {int(pre)}
+    return render(request, "notices.html", notices=notices, targets=_notice_targets(co), selected=selected,
+                  errors=errors or [], form=form_data, limits=(NOTICE_TITLE_MAX, NOTICE_TEXT_MAX))
+
+
+@guard()
+async def notices_page(request: Request):
+    if request.method == "GET":
+        return _notices_render(request)
+    user = request.state.user
+    if not can(user, "edit"):
+        return render(request, "error.html", message="Non hai i permessi per questa operazione.")
+    form = request.state.form
+    title = " ".join(form.get("title", "").split())
+    text = form.get("text", "").replace("\r\n", "\n").strip()
+    valid = {p["id"] for g in _notice_targets(user["company_id"]) for p in g["plants"]}
+    if form.get("tutti") == "1":
+        chosen = valid
+    else:
+        chosen = {int(v) for v in form.getlist("plant") if v.isdigit()} & valid
+    errors = []
+    if not title:
+        errors.append("Scrivi il titolo della comunicazione.")
+    elif len(title) > NOTICE_TITLE_MAX:
+        errors.append(f"Il titolo può avere al massimo {NOTICE_TITLE_MAX} caratteri.")
+    if not text:
+        errors.append("Scrivi il testo della comunicazione.")
+    elif len(text) > NOTICE_TEXT_MAX:
+        errors.append(f"Il testo può avere al massimo {NOTICE_TEXT_MAX} caratteri.")
+    if not chosen:
+        errors.append("Scegli almeno un impianto a cui mandarla.")
+    if errors:
+        return _notices_render(request, errors, form)
+    ts = db.now()
+    with db.connect() as c:
+        nid = c.execute("INSERT INTO notices(company_id, title, text, author_name, created_by, created_at) VALUES(?, ?, ?, ?, ?, ?)",
+                        (user["company_id"], title, text, person_name(user), user["id"], ts)).lastrowid
+        c.executemany("INSERT INTO notice_plants(notice_id, plant_id) VALUES(?, ?)", [(nid, pid) for pid in sorted(chosen)])
+    n = len(chosen)
+    return redirect("/comunicazioni", f"Comunicazione inviata a {n} {'impianto' if n == 1 else 'impianti'}: "
+                    "i clienti la vedono nel pannello Assistenza entro un minuto.", request)
+
+
+@guard("edit")
+async def notice_delete(request: Request):
+    nid = request.path_params["nid"]
+    db.run("DELETE FROM notices WHERE id = ?", nid)
+    return redirect("/comunicazioni", "Comunicazione eliminata: sparisce anche dal pannello dei clienti.", request)
+
+
 # ---------- utenti e impostazioni (solo amministratore) ----------
 
 @guard("users")
@@ -1179,6 +1322,8 @@ async def settings_page(request: Request):
                   tg_token_set=bool(db.get_csetting(co, "telegram_token")),
                   tg_chat_id=db.get_csetting(co, "telegram_chat_id", ""),
                   tg_events={k: (label, db.get_csetting(co, k, "1") == "1") for k, label in notify.EVENTS.items()},
+                  offline_minutes=notify.company_offline_minutes(co),
+                  offline_range=(notify.OFFLINE_MIN, notify.OFFLINE_MAX),
                   upd=_update_status(co) if can(user, "server") else None,
                   sso=_sso_settings(request, co),
                   mail=_mail_settings() if can(user, "server") else None)
@@ -1304,6 +1449,12 @@ async def telegram_settings(request: Request):
         db.set_csetting(co, "telegram_chat_id", chat_id)
     for key in notify.EVENTS:
         db.set_csetting(co, key, "1" if form.get(key) == "1" else "0")
+    if "offline_minutes" in form:
+        minutes = notify.parse_minutes(form.get("offline_minutes"))
+        if minutes is None:
+            return redirect("/impostazioni#telegram", f"Minuti dell'avviso offline: scrivi un numero tra {notify.OFFLINE_MIN} "
+                            f"e {notify.OFFLINE_MAX}.", request, error=True)
+        db.set_csetting(co, "offline_minutes", str(minutes))
     if action == "prova":
         if not notify.configured(co):
             return redirect("/impostazioni#telegram", "Servono sia il token del bot sia il chat ID.", request, error=True)
@@ -1501,12 +1652,15 @@ routes = [
     Route("/impianti/{pid:int}/nome", plant_rename, methods=["POST"]),
     Route("/impianti/{pid:int}/amministratore", plant_admin, methods=["POST"]),
     Route("/impianti/{pid:int}/elimina", plant_delete, methods=["POST"]),
+    Route("/impianti/{pid:int}/offline", plant_offline, methods=["POST"]),
     Route("/clienti/{cid:int}/elimina", client_delete, methods=["POST"]),
     Route("/impianti/{pid:int}/comandi", plant_command, methods=["POST"]),
     Route("/comandi/{cmd:int}.json", command_detail),
     Route("/ticket", tickets_list),
     Route("/ticket/{tid:int}", ticket_detail),
     Route("/ticket/{tid:int}/rispondi", ticket_reply, methods=["POST"]),
+    Route("/comunicazioni", notices_page, methods=["GET", "POST"]),
+    Route("/comunicazioni/{nid:int}/elimina", notice_delete, methods=["POST"]),
     Route("/utenti", users_page, methods=["GET", "POST"]),
     Route("/utenti/{uid:int}/attiva", user_toggle, methods=["POST"]),
     Route("/utenti/{uid:int}/recupero", user_reset_link, methods=["POST"]),

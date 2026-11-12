@@ -62,10 +62,17 @@
     <div class="card">
       <h2>Ticket</h2>
       {% for t in tickets %}<p style="margin:0 0 10px"><a href="/ticket/{{ t.id }}">{{ t.title }}</a><br>
-        <span class="badge s-{{ t.status }}">{{ TICKET_STATUS[t.status] }}</span> <span class="muted small">{{ t.updated_at | ago }}</span></p>
+        <span class="badge s-{{ t.status }}">{{ TICKET_STATUS[t.status] }}</span> <span class="muted small">{% if t.opened_by %}{{ t.opened_by }} · {% endif %}{{ t.updated_at | ago }}</span></p>
       {% else %}<p class="muted">Nessun ticket.</p>{% endfor %}
     </div>
     {% if plant.paired_at and not plant.revoked %}
+    <div class="card">
+      <h2>Comunicazioni</h2>
+      {% for n in notices %}<p style="margin:0 0 8px"><a href="/comunicazioni#n{{ n.id }}">{{ n.title }}</a><br>
+        <span class="muted small">{{ n.created_at | ago }} · {{ 'ricevuta' if n.delivered_at else 'non ancora ricevuta' }}</span></p>
+      {% else %}<p class="muted small" style="margin:0 0 8px">Nessuna comunicazione inviata a questo impianto.</p>{% endfor %}
+      {% if can(user, 'edit') %}<a class="btn ghost small" href="/comunicazioni?impianto={{ plant.id }}">Scrivi una comunicazione</a>{% endif %}
+    </div>
     {% set adm = plant.admin %}
     <div class="card" id="admin">
       <h2>Accesso amministratore</h2>
@@ -137,6 +144,20 @@
           <input class="grow" name="ha_url_manual" value="{{ plant.ha_url_manual or '' }}" placeholder="https://casa-cliente.duckdns.org">
           <button class="btn small">Salva</button></form>
         <p class="muted small" style="margin:4px 0 0">Lascia vuoto e salva per tornare a quello comunicato dall'agente.</p>
+      </details>
+      {% endif %}
+      <h2 style="margin-top:18px" id="offline">Notifica offline</h2>
+      <p class="small" style="margin:0 0 6px">Avviso dopo <b>{{ (plant.offline_minutes or company_offline) | minutes }}</b> senza contatto
+        {% if plant.offline_minutes %}<span class="muted">(valore di questo impianto)</span>{% else %}<span class="muted">(valore dell'azienda)</span>{% endif %}
+        {% if not telegram_on %}<br><span class="muted">Le notifiche arrivano su Telegram: configurale in Impostazioni.</span>{% endif %}</p>
+      {% if can(user, 'edit') %}
+      <details><summary class="small">Cambia per questo impianto</summary>
+        <form method="post" action="/impianti/{{ plant.id }}/offline" class="row" style="margin-top:6px">
+          <input type="hidden" name="csrf" value="{{ csrf }}">
+          <input name="offline_minutes" type="number" inputmode="numeric" style="width:110px" min="{{ offline_range[0] }}" max="{{ offline_range[1] }}"
+                 value="{{ plant.offline_minutes or '' }}" placeholder="{{ company_offline }}" aria-label="Minuti senza contatto"> <span class="small">minuti</span>
+          <button class="btn small">Salva</button></form>
+        <p class="muted small" style="margin:4px 0 0">Lascia vuoto e salva per usare il valore dell'azienda ({{ company_offline | minutes }}).</p>
       </details>
       {% endif %}
       {% if plant.agent_version and agent_outdated(plant.agent_version) %}

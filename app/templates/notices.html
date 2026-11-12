@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+{% block title %}Comunicazioni{% endblock %}
+{% block content %}
+<div class="head"><div><h1>Comunicazioni</h1>
+  <p class="muted small" style="margin:0">Novità, manutenzioni programmate, nuove funzioni: il cliente le legge nel pannello Assistenza
+    di Home Assistant e riceve una notifica.</p></div></div>
+<div class="grid g-side">
+  <div class="stack">
+    {% for n in notices %}
+    <div class="card notice" id="n{{ n.id }}">
+      <div class="row" style="justify-content:space-between;align-items:flex-start">
+        <div><h2 style="margin:0">{{ n.title }}</h2>
+          <p class="muted small" style="margin:2px 0 0">{{ n.created_at | ts }}{% if n.author_name %} · {{ n.author_name }}{% endif %}</p></div>
+        <span class="pill {{ 'on' if n.delivered == n.targets else 'warn' }}"
+              title="Impianti che l'hanno già ricevuta">ricevuta {{ n.delivered }}/{{ n.targets }}</span>
+      </div>
+      <p class="notice-text">{{ n.text }}</p>
+      <details><summary class="small">{{ n.targets }} {{ 'destinatario' if n.targets == 1 else 'destinatari' }}</summary>
+        <ul class="notice-to">
+          {% for p in n.plants %}<li><a href="/impianti/{{ p.id }}">{{ p.client_name }} · {{ p.name }}</a>
+            <span class="muted small">{% if p.delivered_at %}ricevuta {{ p.delivered_at | ago }}{% else %}non ancora ricevuta{% endif %}</span></li>{% endfor %}
+        </ul>
+        {% if can(user, 'edit') %}
+        <form method="post" action="/comunicazioni/{{ n.id }}/elimina" data-confirm="Eliminare la comunicazione? Sparisce anche dal pannello dei clienti.">
+          <input type="hidden" name="csrf" value="{{ csrf }}"><button class="btn danger small">Elimina</button></form>
+        {% endif %}
+      </details>
+    </div>
+    {% else %}
+    <div class="card"><div class="empty">Nessuna comunicazione inviata.</div></div>
+    {% endfor %}
+  </div>
+  <div class="stack">
+    {% if can(user, 'edit') %}
+    <div class="card">
+      <h2>Nuova comunicazione</h2>
+      {% if targets %}
+      <form method="post" action="/comunicazioni"><input type="hidden" name="csrf" value="{{ csrf }}">
+        <label for="title">Titolo</label>
+        <input id="title" name="title" maxlength="{{ limits[0] }}" required value="{{ form.get('title', '') if form else '' }}"
+               placeholder="es. Nuova funzione: avviso batterie scariche">
+        <label for="text">Testo</label>
+        <textarea id="text" name="text" maxlength="{{ limits[1] }}" required rows="7"
+                  placeholder="Scrivi in parole semplici cosa cambia per il cliente.">{{ form.get('text', '') if form else '' }}</textarea>
+        <label>Destinatari</label>
+        <label class="check"><input type="checkbox" name="tutti" value="1" {{ 'checked' if form and form.get('tutti') == '1' }}> <b>Tutti gli impianti collegati</b></label>
+        <div class="notice-targets">
+          {% for g in targets %}
+          <p class="small muted" style="margin:8px 0 2px">{{ g.client_name }}</p>
+          {% for p in g.plants %}
+          <label class="check"><input type="checkbox" name="plant" value="{{ p.id }}" {{ 'checked' if p.id in selected }}> {{ p.name }}</label>
+          {% endfor %}
+          {% endfor %}
+        </div>
+        <p style="margin-top:14px"><button class="btn">Invia</button></p>
+      </form>
+      {% else %}
+      <p class="muted">Nessun impianto collegato: le comunicazioni arrivano solo agli impianti con l'agente abbinato.</p>
+      {% endif %}
+    </div>
+    {% endif %}
+    <div class="card"><h2>Come la vede il cliente</h2>
+      <p class="small" style="margin:0">Compare in cima al pannello <b>Assistenza</b> di Home Assistant, visibile a tutti gli utenti di casa,
+        con una notifica alla prima ricezione. Serve l'agente aggiornato (dalla versione 0.1.9).</p></div>
+  </div>
+</div>
+{% endblock %}
