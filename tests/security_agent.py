@@ -135,6 +135,24 @@ check(u["admin"] is False, "pannello: se Home Assistant non dice chi è amminist
 check(agent.panel_user("../../etc", "x")["id"] is None and agent.panel_user(None)["admin"] is False,
       "pannello: id utente non valido ignorato")
 
+# ---------------------------------------------------------------- backup e aggiornamenti dal server
+agent.state.set_consent(False)
+r_noconsent = agent.execute({"id": 901, "name": "create_backup", "args": {}})
+agent.state.set_consent(True)
+r_bad = [agent.execute({"id": 902 + i, "name": "install_update", "args": {"entity_id": e}})
+         for i, e in enumerate(["light.cucina", "update.x; rm -rf /", "", None, "update." + "a" * 300])]
+check(r_noconsent[0] is False and all(r[0] is False for r in r_bad) and not agent.jobs.list(),
+      "agente: backup e aggiornamenti rifiutati senza accesso remoto o con un'entità non valida")
+started = []
+agent.jobs._run = lambda job: started.append(job["id"])   # niente Home Assistant vero: si controlla solo l'avvio
+r1 = agent.execute({"id": 950, "name": "create_backup", "args": {"by": EVIL}})
+r2 = agent.execute({"id": 950, "name": "create_backup", "args": {}})
+r3 = agent.execute({"id": 951, "name": "create_backup", "args": {}})
+time.sleep(0.2)
+check(r1[0] and r2[0] and r3[0] is False and started == [950] and len(agent.jobs.status()[0]["by"] or "") <= 60,
+      "agente: un comando rispedito non avvia una seconda operazione, una alla volta, nome del tecnico accorciato")
+agent.state.update(jobs=[])
+
 # ---------------------------------------------------------------- reindirizzamenti
 try:
     agent.link.poll_commands(wait=0)

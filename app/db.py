@@ -205,6 +205,14 @@ MIGRATIONS = [
     CREATE INDEX idx_notices_company ON notices(company_id);
     CREATE INDEX idx_notice_plants_plant ON notice_plants(plant_id);
     """,
+    # 11 — conferma di lettura delle comunicazioni (quando e da quale utente di Home Assistant sono
+    #      state viste la prima volta nel pannello Assistenza); backup e aggiornamenti avviati
+    #      dall'installatore, con lo stato comunicato dall'agente
+    """
+    ALTER TABLE notice_plants ADD COLUMN read_at TEXT;
+    ALTER TABLE notice_plants ADD COLUMN read_by TEXT;
+    ALTER TABLE plants ADD COLUMN jobs TEXT;
+    """,
 ]
 
 

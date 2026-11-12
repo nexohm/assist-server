@@ -101,7 +101,8 @@ os.makedirs(f"{S}/agentdata", exist_ok=True)
 json.dump({"server_url": BASE, "pair_code": code.replace("-", "").lower(), "heartbeat_seconds": 15, "diagnostics_minutes": 1},
           open(f"{S}/agentdata/options.json", "w"))
 env = dict(os.environ, DATA_DIR=f"{S}/agentdata", HA_URL="http://127.0.0.1:8123/core/api", SUPERVISOR_URL="http://127.0.0.1:8123",
-           SUPERVISOR_TOKEN="test-token", PANEL_ALLOW_IPS="127.0.0.1", PANEL_PORT="8099")
+           SUPERVISOR_TOKEN="test-token", PANEL_ALLOW_IPS="127.0.0.1", PANEL_PORT="8099",
+           NOTICE_HIDE_SECONDS="12", JOBS_POLL="1")
 agent = subprocess.Popen([sys.executable, "-u", "-m", "agent.main"], cwd=AGENT_DIR,
                          env=env, stdout=open(f"{S}/agent.log", "w"), stderr=subprocess.STDOUT)
 try:
@@ -250,9 +251,20 @@ try:
     n_notif = sum(1 for c in ha_calls() if "Nuova funzione" in c["data"].get("title", ""))
     time.sleep(16)
     check(sum(1 for c in ha_calls() if "Nuova funzione" in c["data"].get("title", "")) == n_notif, "comunicazioni: notificata una volta sola")
+    read = wait_for(lambda: db.execute("SELECT read_at, read_by FROM notice_plants WHERE notice_id=?", (nid,)).fetchone()["read_at"], 40, 0.5)
+    rb = db.execute("SELECT read_by FROM notice_plants WHERE notice_id=?", (nid,)).fetchone()[0]
+    check(read and rb == "Roberta Bianchi" and "letta 1/1" in web.get(BASE + "/comunicazioni").text
+          and "letta" in web.get(BASE + "/comunicazioni").text and "da Roberta Bianchi" in web.get(BASE + "/comunicazioni").text,
+          "comunicazioni: letta nel pannello, l'installatore vede quando e da chi")
+    check(any(c["domain"] == "persistent_notification" and c["service"] == "dismiss"
+              and c["data"].get("notification_id") == f"assistenza_comunicazione_{nid}" for c in ha_calls()),
+          "comunicazioni: letta, la notifica sparisce dalla campanella")
+    check(wait_for(lambda: "Nuova funzione" not in requests.get(PANEL).text, 30, 0.5)
+          and "Nuova funzione" in web.get(BASE + "/comunicazioni").text,
+          "comunicazioni: sparisce dal pannello dopo il tempo stabilito (30 minuti, 12 secondi nei test), in dashboard resta")
     cp = web.get(BASE + "/comunicazioni").text
     web.post(BASE + f"/comunicazioni/{nid}/elimina", data={"csrf": csrf(cp)})
-    check(wait_for(lambda: "Nuova funzione" not in requests.get(PANEL).text, 40, 0.5), "comunicazioni: eliminata, sparisce dal pannello")
+    check(wait_for(lambda: not json.load(open(f"{S}/agentdata/state.json"))["notices"], 40, 0.5), "comunicazioni: eliminata, l'agente la toglie")
     ro_cp = web.get(BASE + "/comunicazioni").text
     check("Nessuna comunicazione" in ro_cp, "comunicazioni: elenco vuoto dopo l'eliminazione")
 
@@ -493,6 +505,62 @@ try:
     web.post(BASE + f"/impianti/{pid}/amministratore", data={"csrf": csrf(page), "op": "chiudi"})
     check(wait_for(lambda: any("chiuso da Mario Rossi" in c["data"].get("message", "") for c in ha_calls()), 40, 0.5),
           "amministratore: chiuso dall'installatore, il cliente sa chi l'ha chiuso")
+
+    # 10b. backup e aggiornamenti dalla pagina dell'impianto
+    fake_backups = lambda: requests.get("http://127.0.0.1:8123/fake/backups").json()
+    def job(pred, timeout=40):
+        def last():
+            j = json.loads(db.execute("SELECT jobs FROM plants WHERE id=?", (pid,)).fetchone()[0] or "[]")
+            return j[-1] if j and pred(j[-1]) else None
+        return wait_for(last, timeout, 0.5)
+    page = web.get(BASE + f"/impianti/{pid}").text
+    web.post(BASE + f"/impianti/{pid}/comandi", data={"csrf": csrf(page), "name": "run_diagnostics"})   # diagnostica vera, non quella finta di prima
+    wait_for(lambda: "updates_list" in (db.execute("SELECT last_diag FROM plants WHERE id=?", (pid,)).fetchone()[0] or ""), 30, 0.3)
+    page = web.get(BASE + f"/impianti/{pid}").text
+    check("Backup e aggiornamenti" in page and "Home Assistant Core" in page and "2026.10.1 → <b>2026.10.2</b>" in page
+          and "Fai un backup ora" in page, "pagina impianto: aggiornamenti disponibili con il pulsante Aggiorna")
+    check("Ogni giorno" in page and "alle 04:45" in page and "Home Assistant Cloud" in page and "ultimi 3" in page
+          and "non riuscito" in page and "(automatico)" in page and "700.0 MB" in page,
+          "pagina impianto: backup automatico (programmazione, ultimo riuscito, tentativo fallito) ed elenco dei backup")
+    r = web.post(BASE + f"/impianti/{pid}/manutenzione", data={"csrf": csrf(page), "op": "aggiorna", "entity_id": "update.inventato"})
+    check('class="toast err"' in r.text and "non disponibile" in r.text, "aggiornamento sconosciuto rifiutato dalla dashboard")
+    open(f"{S}/backup_fail", "w").close()
+    n0 = len(ha_calls())
+    web.post(BASE + f"/impianti/{pid}/manutenzione", data={"csrf": csrf(page), "op": "aggiorna", "entity_id": "update.home_assistant_core_update"})
+    j = job(lambda j: j["status"] != "in_corso")
+    check(j and j["status"] == "errore" and "aggiornamento non eseguito" in (j["message"] or "")
+          and not any(c["domain"] == "update" for c in ha_calls()[n0:]),
+          "backup non riuscito: l'aggiornamento non parte")
+    check(any("aggiornamento in corso" in c["data"].get("title", "") and "Mario Rossi di Rossi Impianti sta aggiornando" in c["data"].get("message", "")
+              for c in ha_calls()[n0:]) and any("non riuscito" in c["data"].get("message", "") for c in ha_calls()[n0:]),
+          "il cliente sa chi sta aggiornando e che non è andata a buon fine")
+    os.remove(f"{S}/backup_fail")
+    page = wait_for(lambda: (lambda t: t if "Non riuscito" in t else None)(web.get(BASE + f"/impianti/{pid}").text), 20, 0.5)
+    check(page and "aggiornamento non eseguito" in page, "dashboard: operazione non riuscita col motivo")
+    panel_post("consenso", {"enabled": "0"})
+    wait_for(lambda: db.execute("SELECT consent FROM plants WHERE id=?", (pid,)).fetchone()["consent"] == 0, 20, 0.2)
+    r = web.post(BASE + f"/impianti/{pid}/manutenzione", data={"csrf": csrf(page), "op": "backup"})
+    check('class="toast err"' in r.text and "accesso remoto" in r.text, "backup e aggiornamenti bloccati con l'accesso remoto sospeso")
+    panel_post("consenso", {"enabled": "1", "durata": "sempre"})
+    wait_for(lambda: db.execute("SELECT consent FROM plants WHERE id=?", (pid,)).fetchone()["consent"] == 1, 20, 0.2)
+    page = web.get(BASE + f"/impianti/{pid}").text
+    web.post(BASE + f"/impianti/{pid}/manutenzione", data={"csrf": csrf(page), "op": "backup"})
+    j = job(lambda j: j["kind"] == "backup" and j["status"] != "in_corso")
+    check(j and j["status"] == "completato" and j["by"] == "Mario Rossi" and any("richiesto dall'installatore" in b for b in fake_backups()),
+          "Fai un backup ora: backup completo creato in Home Assistant")
+    n0 = len(ha_calls())
+    page = web.get(BASE + f"/impianti/{pid}").text
+    r = web.post(BASE + f"/impianti/{pid}/manutenzione", data={"csrf": csrf(page), "op": "aggiorna", "entity_id": "update.home_assistant_core_update"})
+    check("prima viene fatto un backup" in r.text, "aggiornamento avviato dalla dashboard")
+    j = job(lambda j: j["kind"] == "update" and j["status"] == "completato")
+    calls = ha_calls()[n0:]
+    check(j and j["status"] == "completato" and j["to"] == "2026.10.2"
+          and any("prima di aggiornare Home Assistant Core" in b for b in fake_backups())
+          and any(c["domain"] == "update" and c["service"] == "install" and c["data"]["entity_id"] == "update.home_assistant_core_update" for c in calls),
+          "aggiornamento: prima il backup completo, poi l'installazione")
+    check(any("aggiornato alla versione 2026.10.2" in c["data"].get("message", "") for c in calls), "il cliente riceve la notifica di fine aggiornamento")
+    check(wait_for(lambda: "Nessun aggiornamento disponibile" in web.get(BASE + f"/impianti/{pid}").text, 40, 0.5),
+          "dopo l'aggiornamento la diagnostica si aggiorna da sola")
 
     # 11. revoca
     page = web.get(BASE + f"/impianti/{pid}").text

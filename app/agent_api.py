@@ -155,6 +155,19 @@ async def report(request: Request):
         if req and (admin["active"] or admin["declined"] == req):
             db.run("UPDATE plants SET admin_requested_at = NULL, admin_requested_by = NULL "
                    "WHERE id = ? AND admin_requested_at = ?", plant["id"], req)
+    if "jobs" in data:   # backup e aggiornamenti avviati dall'installatore (agente 0.1.9)
+        db.run("UPDATE plants SET jobs = ? WHERE id = ?", json.dumps(sanitize.jobs(data.get("jobs"))), plant["id"])
+    # comunicazioni lette nel pannello: solo quelle di questo impianto, e la prima lettura non si riscrive
+    reads = data.get("notices_read")
+    for r in (reads if isinstance(reads, list) else [])[:50]:
+        if not isinstance(r, dict) or type(r.get("id")) is not int:
+            continue
+        now = db.now()
+        at = sanitize.timestamp(r.get("at"))
+        at = at if at and at <= now else now   # niente letture nel futuro
+        db.run("UPDATE notice_plants SET read_at = ?, read_by = ?, delivered_at = COALESCE(delivered_at, ?) "
+               "WHERE notice_id = ? AND plant_id = ? AND read_at IS NULL",
+               at, sanitize.person_name(r.get("by")), now, r["id"], plant["id"])
     diag = sanitize.diagnostics(data.get("diagnostics"))
     if consent and diag:
         db.run("UPDATE plants SET last_diag = ?, last_diag_at = ? WHERE id = ?",

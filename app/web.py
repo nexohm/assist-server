@@ -31,6 +31,13 @@ ALLOWED_COMMANDS = {
 TICKET_STATUS = {"aperto": "Aperto", "in_lavorazione": "In lavorazione", "chiuso": "Chiuso"}
 # Comandi dell'accesso amministratore: hanno pulsanti e permesso propri (li concede il cliente)
 ADMIN_COMMANDS = {"admin_password": "Accesso amministratore: nuova password", "admin_close": "Accesso amministratore: chiusura"}
+# Backup e aggiornamenti: pulsanti propri nella pagina dell'impianto, servono accesso remoto e agente 0.1.9
+MAINTENANCE_COMMANDS = {"create_backup": "Backup completo", "install_update": "Aggiornamento"}
+UPDATE_KIND_LABELS = {"core": "Home Assistant", "os": "Sistema operativo", "supervisor": "Supervisor",
+                      "addon": "Add-on", "altro": "Integrazione o dispositivo"}
+JOB_STATUS = {"in_corso": "In corso", "completato": "Completato", "errore": "Non riuscito"}
+RECURRENCE_LABELS = {"never": "Disattivato", "daily": "Ogni giorno", "custom_days": "Nei giorni scelti"}
+DAY_LABELS = {"mon": "lun", "tue": "mar", "wed": "mer", "thu": "gio", "fri": "ven", "sat": "sab", "sun": "dom"}
 COMMAND_STATUS = {"in_attesa": "In attesa", "inviato": "Inviato", "completato": "Completato", "errore": "Errore"}
 
 
@@ -85,7 +92,9 @@ templates.env.filters["minutes"] = notify.fmt_minutes
 templates.env.globals.update(agent_outdated=updates.agent_outdated, latest_agent=updates.latest_agent,
                              TICKET_STATUS=TICKET_STATUS, COMMAND_STATUS=COMMAND_STATUS,
                              ROLE_LABELS=ROLE_LABELS, ALLOWED_COMMANDS=ALLOWED_COMMANDS,
-                             COMMAND_LABELS={**ALLOWED_COMMANDS, **ADMIN_COMMANDS}, can=can,
+                             COMMAND_LABELS={**ALLOWED_COMMANDS, **ADMIN_COMMANDS, **MAINTENANCE_COMMANDS}, can=can,
+                             UPDATE_KIND_LABELS=UPDATE_KIND_LABELS, JOB_STATUS=JOB_STATUS,
+                             RECURRENCE_LABELS=RECURRENCE_LABELS, DAY_LABELS=DAY_LABELS,
                              is_online=is_online, asset=asset)
 
 
@@ -894,6 +903,8 @@ def _load_plant(pid):
         p["online"] = is_online(p)
         p["diag"] = sanitize.stored_diagnostics(p["last_diag"])
         p["admin"] = sanitize.admin_state(db.loads(p.get("admin_state"), None)) or {}
+        p["jobs"] = list(reversed(sanitize.jobs(db.loads(p.get("jobs"), []))))
+        p["job_running"] = next((j for j in p["jobs"] if j["status"] == "in_corso"), None)
     return p
 
 
@@ -911,7 +922,7 @@ async def plant_detail(request: Request):
     return render(request, "plant_detail.html", plant=plant, commands=commands, tickets=tickets, admin_secret=admin_secret,
                   now_ts=time.time(), company_offline=notify.company_offline_minutes(co),
                   offline_range=(notify.OFFLINE_MIN, notify.OFFLINE_MAX), telegram_on=notify.configured(co),
-                  notices=db.all_("SELECT n.id, n.title, n.created_at, np.delivered_at FROM notice_plants np "
+                  notices=db.all_("SELECT n.id, n.title, n.created_at, np.delivered_at, np.read_at, np.read_by FROM notice_plants np "
                                   "JOIN notices n ON n.id = np.notice_id WHERE np.plant_id = ? ORDER BY n.id DESC LIMIT 5",
                                   plant["id"]))
 
@@ -930,7 +941,8 @@ async def plant_state_json(request: Request):
 def admin_key(plant):
     """Riassunto dello stato amministratore: se cambia, la pagina dell'impianto si ricarica da sola."""
     a = plant.get("admin") or {}
-    return f'{a.get("active")}|{a.get("until")}|{a.get("username")}|{plant.get("admin_requested_at")}|{a.get("declined")}'
+    jobs = "".join(f'{j["id"]}{j["status"]}{j.get("message")}' for j in plant.get("jobs") or [])
+    return f'{a.get("active")}|{a.get("until")}|{a.get("username")}|{plant.get("admin_requested_at")}|{a.get("declined")}|{jobs}'
 
 
 templates.env.globals["admin_key"] = admin_key
@@ -1008,6 +1020,45 @@ async def plant_command(request: Request):
            plant["id"], name, request.state.user["id"], db.now())
     ring(plant["id"])
     return redirect(f"/impianti/{pid}", f"Comando «{ALLOWED_COMMANDS[name]}» inviato.", request)
+
+
+# ---------- backup e aggiornamenti ----------
+
+@guard("commands")
+async def plant_maintenance(request: Request):
+    """Backup completo o installazione di un aggiornamento, eseguiti dall'agente in background.
+    Servono l'accesso remoto del cliente e un agente che li conosce; prima di aggiornare l'agente fa un backup."""
+    pid = request.path_params["pid"]
+    plant = _load_plant(pid)
+    if not plant or not plant["paired_at"] or plant["revoked"]:
+        return render(request, "error.html", message="Impianto non trovato o non collegato.")
+    back = f"/impianti/{pid}#manutenzione"
+    if not remote_access(plant):
+        return redirect(back, "Il cliente ha sospeso l'accesso remoto: operazione non inviata.", request, error=True)
+    if plant["diag"].get("backups") is None:
+        return redirect(back, "Serve l'agente 0.1.9 o successivo sull'impianto.", request, error=True)
+    if plant["job_running"]:
+        return redirect(back, f"C'è già un'operazione in corso: {plant['job_running']['title']}.", request, error=True)
+    if db.one("SELECT 1 FROM commands WHERE plant_id = ? AND name IN ('create_backup', 'install_update') "
+              "AND status IN ('in_attesa', 'inviato')", pid):
+        return redirect(back, "C'è già un'operazione in attesa dell'agente.", request, error=True)
+    op = request.state.form.get("op")
+    args = {"by": person_name(request.state.user)}
+    if op == "backup":
+        name, msg = "create_backup", "Backup completo avviato: l'agente lo crea in Home Assistant."
+    elif op == "aggiorna":
+        eid = request.state.form.get("entity_id", "")
+        upd = next((u for u in plant["diag"].get("updates_list") or [] if u["entity_id"] == eid and u["installable"]), None)
+        if not upd:
+            return redirect(back, "Aggiornamento non disponibile: aggiorna la diagnostica e riprova.", request, error=True)
+        args["entity_id"] = eid
+        name, msg = "install_update", f"Aggiornamento di {upd['title']} avviato: prima viene fatto un backup completo."
+    else:
+        return render(request, "error.html", message="Operazione non valida.")
+    db.run("INSERT INTO commands(plant_id, name, args, created_by, created_at) VALUES(?, ?, ?, ?, ?)",
+           plant["id"], name, json.dumps(args), request.state.user["id"], db.now())
+    ring(plant["id"])
+    return redirect(back, msg, request)
 
 
 # ---------- accesso amministratore temporaneo ----------
@@ -1137,11 +1188,11 @@ def _notice_targets(company_id):
 
 def _notices_render(request, errors=None, form_data=None):
     co = request.state.user["company_id"]
-    notices = db.all_("SELECT n.*, COUNT(np.plant_id) AS targets, COUNT(np.delivered_at) AS delivered "
+    notices = db.all_("SELECT n.*, COUNT(np.plant_id) AS targets, COUNT(np.delivered_at) AS delivered, COUNT(np.read_at) AS read "
                       "FROM notices n LEFT JOIN notice_plants np ON np.notice_id = n.id WHERE n.company_id = ? "
                       "GROUP BY n.id ORDER BY n.id DESC LIMIT 100", co)
     for n in notices:
-        n["plants"] = db.all_("SELECT p.id, p.name, c.name AS client_name, np.delivered_at FROM notice_plants np "
+        n["plants"] = db.all_("SELECT p.id, p.name, c.name AS client_name, np.delivered_at, np.read_at, np.read_by FROM notice_plants np "
                               "JOIN plants p ON p.id = np.plant_id JOIN clients c ON c.id = p.client_id "
                               "WHERE np.notice_id = ? ORDER BY c.name, p.name", n["id"])
     selected = set()
@@ -1653,6 +1704,7 @@ routes = [
     Route("/impianti/{pid:int}/amministratore", plant_admin, methods=["POST"]),
     Route("/impianti/{pid:int}/elimina", plant_delete, methods=["POST"]),
     Route("/impianti/{pid:int}/offline", plant_offline, methods=["POST"]),
+    Route("/impianti/{pid:int}/manutenzione", plant_maintenance, methods=["POST"]),
     Route("/clienti/{cid:int}/elimina", client_delete, methods=["POST"]),
     Route("/impianti/{pid:int}/comandi", plant_command, methods=["POST"]),
     Route("/comandi/{cmd:int}.json", command_detail),

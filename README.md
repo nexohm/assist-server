@@ -74,10 +74,15 @@ cifrato in HTTPS. L'agente esegue solo una lista chiusa di comandi e non può mo
 - **Diagnostica**: entità non disponibili o orfane, batterie scariche, aggiornamenti disponibili, automazioni
   spente, spazio su disco, età dell'ultimo backup. Le entità sono elencate per tipo, col nome e l'id.
 - **Comandi remoti**: diagnostica immediata e ping, con storico.
+- **Backup e aggiornamenti** dalla pagina dell'impianto: backup presenti (anche su NAS e cloud), stato del backup
+  automatico, «Fai un backup ora» e installazione degli aggiornamenti (Home Assistant, sistema operativo,
+  Supervisor, add-on, integrazioni e firmware). Solo con l'accesso remoto attivo; prima di ogni aggiornamento
+  l'agente fa un backup completo e il cliente riceve una notifica.
 - **Ticket**: richieste dei clienti con diagnostica allegata, risposte, stato e assegnazione a un tecnico; si vede
   quale utente di Home Assistant ha aperto la richiesta.
 - **Comunicazioni** ai clienti (novità, manutenzioni, nuove funzioni): a uno, più o tutti gli impianti, con la
-  conferma di ricezione; il cliente le legge nel pannello Assistenza e riceve una notifica.
+  conferma di ricezione e di lettura; il cliente le legge nel pannello Assistenza e riceve una notifica, e 30 minuti
+  dopo la lettura spariscono dal suo pannello.
 - **Accesso amministratore temporaneo** all'Home Assistant del cliente, solo se il cliente lo concede.
 - **Utenti** con ruoli (amministratore, tecnico, sola lettura) e **più aziende** sullo stesso server.
 - **Accesso con Authentik** o un altro provider OpenID Connect, scelto da ogni azienda (oltre alla password).

@@ -68,6 +68,12 @@ Risposta:
   "notices": "3-17", "server_name": "Rossi Impianti", "brand_color": "#0f766e" }
 ```
 
+Dall'agente 0.1.9 il rapporto può contenere anche:
+- `notices_read`: `[{ "id": 17, "at": "<data>", "by": "Maria" }]` — comunicazioni viste nel pannello (la prima
+  lettura non si riscrive, date future non accettate);
+- `jobs`: ultimi 10 backup e aggiornamenti avviati dall'installatore, `[{ "id": <id del comando>, "kind": "backup|update",
+  "title", "entity_id", "from", "to", "status": "in_corso|completato|errore", "message", "by", "started_at", "finished_at" }]`.
+
 `notices` (dal server 0.2.8) è l'impronta delle comunicazioni dell'installatore per l'impianto (`null` se non
 ce ne sono): quando cambia, l'agente le rilegge con `GET /api/agent/notices` (vedi sezione 5).
 
@@ -100,6 +106,12 @@ ancora in attesa: l'agente la mostra al cliente, che può concedere l'accesso o 
 }
 ```
 
+Dall'agente 0.1.9 la diagnostica contiene anche `updates_list` (aggiornamenti: `entity_id`, `title`, `installed`,
+`latest`, `kind` = core|os|supervisor|addon|altro, `installable`, `in_progress`) e `backups` (`items`: nome, data,
+`size_mb`, `kind` completo|parziale, `locations`, `automatic`, `protected`; `automatic`: `recurrence`, `days`, `time`,
+`copies`, `retention_days`, `locations` e le date `last_attempted_automatic_backup`, `last_completed_automatic_backup`,
+`next_automatic_backup`).
+
 `names` (facoltativo, dall'agente 0.1.9) dà il nome leggibile delle entità elencate in `items`: la dashboard
 le mostra raggruppate per tipo, col nome e l'id sotto.
 
@@ -121,11 +133,17 @@ Risultato: `POST /api/agent/commands/{id}/result`
 | `run_diagnostics` | Esegue la diagnostica completa e la restituisce | sì |
 | `admin_password` | Ricrea l'utente amministratore temporaneo e restituisce `{username, password}` | accesso amministratore concesso dal cliente |
 | `admin_close` | Chiude l'accesso amministratore e cancella l'utente | no |
+| `create_backup` | Avvia un backup completo (agente 0.1.9) | sì |
+| `install_update` | `{entity_id}`: backup completo, poi installazione dell'aggiornamento (agente 0.1.9) | sì |
+
+`create_backup` e `install_update` rispondono subito `{"started": true}` e continuano in background: l'esito
+arriva con i rapporti (`jobs`). Un comando rispedito con lo stesso id non avvia una seconda operazione e ne
+gira una alla volta. Se il backup che precede un aggiornamento non riesce, l'aggiornamento non parte.
 
 La password di `admin_password` il server la tiene **solo in memoria** per 15 minuti: nel database va
 un segnaposto. Scadenza e cancellazione dell'utente le gestisce l'agente, non il server.
 
-Nuovi comandi (es. `apply_blueprint`, `reload_integration`, `create_backup`) si aggiungono
+Nuovi comandi (es. `apply_blueprint`, `reload_integration`) si aggiungono
 **prima all'agente** (che li dichiara in `capabilities` nel rapporto, dalla v2) e poi al server.
 
 ## 4. Ticket

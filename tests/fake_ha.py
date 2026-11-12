@@ -16,7 +16,7 @@ STATES = [
     {"entity_id": "sensor.vecchio", "state": "unavailable", "attributes": {"restored": True}},
     {"entity_id": "sensor.porta_batteria", "state": "12", "attributes": {"device_class": "battery", "friendly_name": "Sensore porta batteria"}},
     {"entity_id": "sensor.termo_batteria", "state": "85", "attributes": {"device_class": "battery"}},
-    {"entity_id": "update.home_assistant_core_update", "state": "on", "attributes": {"friendly_name": "Home Assistant Core", "installed_version": "2026.10.1", "latest_version": "2026.10.2"}},
+    {"entity_id": "update.home_assistant_core_update", "state": "on", "attributes": {"friendly_name": "Home Assistant Core", "installed_version": "2026.10.1", "latest_version": "2026.10.2", "supported_features": 11, "title": "Home Assistant Core"}},
     {"entity_id": "automation.luci_sera", "state": "off", "attributes": {"friendly_name": "Luci sera"}},
     {"entity_id": "button.riavvia", "state": "unavailable", "attributes": {}},
 ]
@@ -38,12 +38,27 @@ ROUTES = {
     "/backups": {"result": "ok", "data": {"backups": [{"date": (now - timedelta(days=12)).isoformat()}]}},
 }
 
+# Sistema di backup di Home Assistant (2025.1+): un backup su NAS e cloud, backup automatico giornaliero
+BACKUP_INFO = {
+    "backups": [{"backup_id": "abc", "name": "Automatico", "date": (now - timedelta(days=12)).isoformat(), "protected": True,
+                 "homeassistant_included": True, "database_included": True, "with_automatic_settings": True,
+                 "agents": {"hassio.local": {"size": 734003200, "protected": True}, "cloud.cloud": {"size": 734003200, "protected": True}}}],
+    "last_attempted_automatic_backup": (now - timedelta(days=1)).isoformat(),
+    "last_completed_automatic_backup": (now - timedelta(days=12)).isoformat(),
+    "next_automatic_backup": (now + timedelta(hours=10)).isoformat(),
+}
+BACKUP_CONFIG = {"config": {"schedule": {"recurrence": "daily", "time": "04:45:00", "days": []},
+                            "retention": {"copies": 3, "days": None}, "create_backup": {"agent_ids": ["hassio.local", "cloud.cloud"]}}}
+BACKUPS_CREATED = []
+
 NETWORK_URL = {"internal": "http://192.168.1.50:8123", "external": None, "cloud": "https://bianchi123.ui.nabu.casa"}
 
 
 # Etichette: "esterno" su un'entità, "importante" sul dispositivo della luce cucina
 WS_RESULTS = {
     "network/url": NETWORK_URL,
+    "backup/info": BACKUP_INFO,
+    "backup/config/info": BACKUP_CONFIG,
     "config/label_registry/list": [{"label_id": "importante", "name": "Importante"},
                                    {"label_id": "esterno", "name": "Esterno"}],
     "config/entity_registry/list_for_display": {"entity_categories": {}, "entities": [
@@ -145,6 +160,14 @@ class H(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/core/websocket" and self.headers.get("Upgrade", "").lower() == "websocket":
             return self.websocket()
+        if self.path.startswith("/core/api/states/"):
+            eid = self.path.removeprefix("/core/api/states/")
+            st = next((x for x in STATES if x["entity_id"] == eid), None)
+            self.send_response(200 if st else 404); self.send_header("Content-Type", "application/json"); self.end_headers()
+            self.wfile.write(json.dumps(st or {"message": "Entity not found."}).encode()); return
+        if self.path == "/fake/backups":  # solo per i test: backup creati dall'agente
+            body = json.dumps(BACKUPS_CREATED).encode()
+            self.send_response(200); self.end_headers(); self.wfile.write(body); return
         if self.path == "/fake/users":  # solo per i test: utenti creati dall'agente
             body = json.dumps(list(USERS.values())).encode()
             self.send_response(200); self.end_headers(); self.wfile.write(body); return
@@ -155,9 +178,21 @@ class H(BaseHTTPRequestHandler):
 
     def do_POST(self):
         # chiamate ai servizi (es. notifiche): registrate in un file per i test
+        if self.headers.get("Authorization") == "Bearer test-token" and self.path == "/backups/new/full":
+            body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
+            BACKUPS_CREATED.append(body.get("name"))
+            if os.environ.get("FAKE_BACKUP_FAIL") and os.path.exists(os.environ["FAKE_BACKUP_FAIL"]):
+                self.send_response(400); self.send_header("Content-Type", "application/json"); self.end_headers()
+                self.wfile.write(b'{"result": "error", "message": "disco pieno"}'); return
+            self.send_response(200); self.send_header("Content-Type", "application/json"); self.end_headers()
+            self.wfile.write(json.dumps({"result": "ok", "data": {"slug": "nuovo%d" % len(BACKUPS_CREATED)}}).encode()); return
         if self.headers.get("Authorization") != "Bearer test-token" or not self.path.startswith("/core/api/services/"):
             self.send_response(401); self.end_headers(); return
         body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
+        if (domain_service := self.path.removeprefix("/core/api/services/")) == "update/install":
+            for x in STATES:   # aggiornamento installato: l'entità torna "off" con la nuova versione
+                if x["entity_id"] == body.get("entity_id"):
+                    x["state"] = "off"; x["attributes"]["installed_version"] = x["attributes"]["latest_version"]
         domain, service = self.path.removeprefix("/core/api/services/").split("/", 1)
         if os.environ.get("FAKE_HA_LOG"):
             with open(os.environ["FAKE_HA_LOG"], "a") as f:

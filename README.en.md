@@ -76,10 +76,15 @@ HTTPS. The agent only runs a closed list of commands and cannot change the confi
 - **Diagnostics**: unavailable or orphaned entities, low batteries, pending updates, disabled automations, disk
   space, age of the last backup. Entities are listed by type, with their name and id.
 - **Remote commands**: on-demand diagnostics and ping, with history.
+- **Backups and updates** from the system page: existing backups (also on NAS and cloud), automatic backup status,
+  "back up now" and installation of updates (Home Assistant, operating system, Supervisor, add-ons, integrations and
+  firmware). Only with remote access on; before every update the agent makes a full backup and the customer gets a
+  notification.
 - **Tickets**: customer requests with diagnostics attached, replies, status and assignment to a technician; shows
   which Home Assistant user opened the request.
 - **Announcements** to customers (news, planned maintenance, new features): to one, several or all systems, with
-  delivery confirmation; the customer reads them in the Support panel and gets a notification.
+  delivery and read confirmation; the customer reads them in the Support panel and gets a notification, and 30
+  minutes after being read they disappear from the panel.
 - **Temporary administrator access** to the customer's Home Assistant, only if the customer grants it.
 - **Users** with roles (administrator, technician, read-only) and **several companies** on one server.
 - **Sign-in with Authentik** or another OpenID Connect provider, chosen by each company (besides passwords).

@@ -47,6 +47,83 @@
 <div class="grid g-side">
   <div class="stack">
     <div class="card"><h2>Diagnostica</h2>{{ diagnostics(plant.diag) }}</div>
+    {% if plant.paired_at and not plant.revoked %}
+    {% set d = plant.diag or {} %}{% set ups = d.get('updates_list') %}{% set bk = d.get('backups') %}
+    {% set can_run = can(user, 'commands') and remote_access(plant) and not plant.job_running and bk is not none %}
+    <div class="card" id="manutenzione">
+      <div class="row" style="justify-content:space-between"><h2 style="margin:0">Backup e aggiornamenti</h2>
+        {% if can(user, 'commands') and bk is not none %}
+        <form class="inline" method="post" action="/impianti/{{ plant.id }}/manutenzione"
+              data-confirm="Creare adesso un backup completo nell'Home Assistant del cliente? Il cliente riceve una notifica alla fine.">
+          <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="op" value="backup">
+          <button class="btn ghost small" {{ 'disabled' if not can_run }}>Fai un backup ora</button></form>
+        {% endif %}
+      </div>
+      {% if bk is none %}
+        <p class="muted small" style="margin:10px 0 0">Serve l'agente 0.1.9 o successivo per vedere i backup e lanciare gli aggiornamenti da qui.</p>
+      {% else %}
+        {% if not remote_access(plant) %}<p class="small" style="margin:10px 0 0"><span class="badge s-attenzione">Accesso remoto sospeso</span>
+          Backup e aggiornamenti si possono avviare solo quando il cliente concede l'accesso remoto.</p>{% endif %}
+        {% if plant.jobs %}
+        <h3 class="sub">Operazioni</h3>
+        <ul class="jobs">
+          {% for j in plant.jobs[:4] %}
+          <li><span class="badge s-{{ {'in_corso': 'in_attesa', 'completato': 'completato', 'errore': 'errore'}[j.status] }}">{{ JOB_STATUS[j.status] }}</span>
+            <b>{{ j.title }}</b>{% if j.kind == 'update' and j.to %} <span class="muted small">{{ j['from'] or '?' }} → {{ j.to }}</span>{% endif %}
+            <br><span class="muted small">{{ j.started_at | ago }}{% if j.by %} · {{ j.by }}{% endif %}{% if j.message %} · {{ j.message }}{% endif %}</span></li>
+          {% endfor %}
+        </ul>
+        {% endif %}
+
+        <h3 class="sub">Aggiornamenti disponibili</h3>
+        {% if ups %}
+        <table class="compact">
+          {% for u in ups %}
+          <tr><td><b>{{ u.title }}</b><br><span class="muted small">{{ UPDATE_KIND_LABELS[u.kind] }}</span></td>
+            <td class="small nowrap">{{ u.installed or '?' }} → <b>{{ u.latest or '?' }}</b></td>
+            <td class="right">
+              {% if u.in_progress %}<span class="badge s-in_attesa">in corso</span>
+              {% elif not u.installable %}<span class="muted small" title="Home Assistant non permette di installarlo da remoto">solo a mano</span>
+              {% elif can(user, 'commands') %}
+              <form class="inline" method="post" action="/impianti/{{ plant.id }}/manutenzione"
+                    data-confirm="Aggiornare {{ u.title }} alla versione {{ u.latest }}? Prima viene fatto un backup completo, poi l'aggiornamento: Home Assistant potrebbe riavviarsi. Il cliente riceve una notifica.">
+                <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="op" value="aggiorna">
+                <input type="hidden" name="entity_id" value="{{ u.entity_id }}">
+                <button class="btn small" {{ 'disabled' if not can_run }}>Aggiorna</button></form>
+              {% endif %}</td></tr>
+          {% endfor %}
+        </table>
+        <p class="muted small" style="margin:6px 0 0">Prima di ogni aggiornamento l'agente crea un backup completo; se il backup non riesce, l'aggiornamento non parte.</p>
+        {% else %}<p class="muted small" style="margin:0">Nessun aggiornamento disponibile all'ultimo controllo.</p>{% endif %}
+
+        <h3 class="sub">Backup automatico</h3>
+        {% set au = bk.automatic %}
+        {% if au %}
+        <dl class="kv">
+          <dt>Programmazione</dt><dd>{{ RECURRENCE_LABELS.get(au.recurrence, '—') }}{% if au.recurrence == 'custom_days' and au.days %} ({{ au.days | map('extract', DAY_LABELS) | join(', ') }}){% endif %}{% if au.time and au.recurrence != 'never' %} alle {{ au.time[:5] }}{% endif %}</dd>
+          <dt>Ultimo riuscito</dt><dd>{% if au.last_completed %}{{ au.last_completed | ts }} ({{ au.last_completed | ago }}){% else %}mai{% endif %}</dd>
+          {% if au.last_attempted and au.last_attempted != au.last_completed and (not au.last_completed or au.last_attempted > au.last_completed) %}
+          <dt>Ultimo tentativo</dt><dd><span class="badge s-errore">non riuscito</span> {{ au.last_attempted | ts }}</dd>{% endif %}
+          <dt>Prossimo</dt><dd>{{ au.next | ts if au.next else '—' }}</dd>
+          {% if au.locations %}<dt>Dove</dt><dd>{{ au.locations | join(', ') }}</dd>{% endif %}
+          {% if au.copies or au.retention_days %}<dt>Conserva</dt><dd>{% if au.copies %}ultimi {{ au.copies | int }}{% else %}{{ au.retention_days | int }} giorni{% endif %}</dd>{% endif %}
+        </dl>
+        {% else %}<p class="muted small" style="margin:0">Stato del backup automatico non disponibile (serve Home Assistant 2025.1 o successivo).</p>{% endif %}
+
+        <h3 class="sub">Backup presenti</h3>
+        {% if bk['items'] %}
+        <div class="table-wrap"><table class="compact">
+          <tr><th>Data</th><th>Nome</th><th>Tipo</th><th>Dimensione</th><th>Dove</th></tr>
+          {% for b in bk['items'] %}
+          <tr><td class="small nowrap">{{ b.date | ts }}</td><td class="small">{{ b.name or '—' }}{% if b.automatic %} <span class="muted">(automatico)</span>{% endif %}{% if b.protected %} 🔒{% endif %}</td>
+            <td class="small">{{ b.kind or '—' }}</td><td class="small nowrap">{% if b.size_mb is not none %}{{ '%.1f' | format(b.size_mb / 1024) ~ ' GB' if b.size_mb >= 1024 else (b.size_mb | round(1)) ~ ' MB' }}{% else %}—{% endif %}</td>
+            <td class="small">{{ b.locations | join(', ') or '—' }}</td></tr>
+          {% endfor %}
+        </table></div>
+        {% else %}<p class="muted small" style="margin:0">Nessun backup trovato.</p>{% endif %}
+      {% endif %}
+    </div>
+    {% endif %}
     <div class="card">
       <h2>Comandi recenti</h2>
       {% if commands %}
@@ -69,7 +146,8 @@
     <div class="card">
       <h2>Comunicazioni</h2>
       {% for n in notices %}<p style="margin:0 0 8px"><a href="/comunicazioni#n{{ n.id }}">{{ n.title }}</a><br>
-        <span class="muted small">{{ n.created_at | ago }} · {{ 'ricevuta' if n.delivered_at else 'non ancora ricevuta' }}</span></p>
+        <span class="muted small">{{ n.created_at | ago }} ·
+          {% if n.read_at %}letta{% if n.read_by %} da {{ n.read_by }}{% endif %}{% elif n.delivered_at %}ricevuta, non ancora letta{% else %}non ancora ricevuta{% endif %}</span></p>
       {% else %}<p class="muted small" style="margin:0 0 8px">Nessuna comunicazione inviata a questo impianto.</p>{% endfor %}
       {% if can(user, 'edit') %}<a class="btn ghost small" href="/comunicazioni?impianto={{ plant.id }}">Scrivi una comunicazione</a>{% endif %}
     </div>

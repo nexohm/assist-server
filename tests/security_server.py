@@ -249,6 +249,34 @@ tid_a = db.execute("SELECT id FROM tickets WHERE plant_id = ? ORDER BY id DESC",
 pages.append(admin.get(BASE + f"/ticket/{tid_a}").text)
 check(not any("<img src=x" in p or "<script>alert" in p for p in pages), "XSS: testi del cliente e dell'agente mostrati in modo sicuro")
 
+# backup, aggiornamenti e operazioni raccontati da un agente ostile
+requests.post(BASE + "/api/agent/report", headers=agent_headers(ta), json={
+    "consent": True,
+    "diagnostics": {"status": "ok", "updates_list": [{"entity_id": "update.x", "title": evil, "installed": evil, "latest": evil,
+                                                      "kind": evil, "installable": True},
+                                                     {"entity_id": "light.non_update", "title": "finto", "installable": True}],
+                    "backups": {"items": [{"name": evil, "date": evil, "size_mb": evil, "kind": evil, "locations": [evil]}],
+                                "automatic": {"recurrence": evil, "days": [evil], "time": evil, "locations": [evil]}}},
+    "jobs": [{"id": 1, "kind": evil, "title": evil, "status": evil, "message": evil, "by": evil, "entity_id": evil}, "stringa"]})
+pg = admin.get(BASE + f"/impianti/{pa}").text
+check("<img src=x" not in pg and "light.non_update" not in pg and "&lt;img" in pg,
+      "backup e aggiornamenti: dati dell'agente mostrati come testo, voci non valide scartate")
+before = db.execute("SELECT COUNT(*) FROM commands").fetchone()[0]
+form_post(let, f"/impianti/{pa}/manutenzione", f"/impianti/{pa}", {"op": "backup"})
+form_post(admin, f"/impianti/{pa}/manutenzione", f"/impianti/{pa}", {"op": "aggiorna", "entity_id": "light.non_update"})
+form_post(admin, f"/impianti/{pa}/manutenzione", f"/impianti/{pa}", {"op": "rm -rf"})
+check(db.execute("SELECT COUNT(*) FROM commands").fetchone()[0] == before,
+      "backup e aggiornamenti: vietati al ruolo lettura, solo voci installabili della diagnostica")
+form_post(admin, f"/impianti/{pa}/manutenzione", f"/impianti/{pa}", {"op": "aggiorna", "entity_id": "update.x"})
+args = db.execute("SELECT name, args FROM commands ORDER BY id DESC").fetchone()
+check(args[0] == "install_update" and json.loads(args[1]).get("entity_id") == "update.x",
+      "(preparazione) aggiornamento valido inviato all'agente")
+form_post(admin, f"/impianti/{pa}/manutenzione", f"/impianti/{pa}", {"op": "backup"})
+check(db.execute("SELECT COUNT(*) FROM commands WHERE name IN ('create_backup','install_update') AND plant_id = ?", (pa,)).fetchone()[0] == 1,
+      "backup e aggiornamenti: una sola operazione alla volta")
+db.execute("UPDATE commands SET status = 'errore' WHERE name IN ('create_backup','install_update')"); db.commit()
+requests.post(BASE + "/api/agent/report", headers=agent_headers(ta), json={"consent": True, "jobs": []})
+
 broken = []
 for diag in ({"issues": ["solo una stringa"]}, {"collected_at": 12345, "system": {"last_backup": 99}},
              {"summary": "x", "system": [1, 2], "issues": {"a": 1}}, {"issues": [{"items": 5}]}):
@@ -386,6 +414,18 @@ check(not db.execute("SELECT 1 FROM notices WHERE title = 'Intrusa'").fetchone()
       and "Avviso di Rossi" not in bia.get(BASE + "/comunicazioni").text
       and "Avviso di Rossi" not in json.dumps(seen_b),
       "aziende: comunicazioni e avviso offline restano dentro la propria azienda (pagine e API dell'agente)")
+requests.post(BASE + "/api/agent/report", headers=agent_headers(paired["token"]),
+              json={"consent": True, "notices_read": [{"id": nid_a, "at": "2020-01-01T00:00:00+00:00", "by": "Intruso"}, {"id": True}, "x"]})
+check(db.execute("SELECT read_at FROM notice_plants WHERE notice_id = ?", (nid_a,)).fetchone()[0] is None,
+      "comunicazioni: un impianto non può segnare come lette quelle di un altro")
+requests.post(BASE + "/api/agent/report", headers=agent_headers(ta),
+              json={"consent": True, "notices_read": [{"id": nid_a, "at": "2999-01-01T00:00:00+00:00", "by": "<b>Maria</b>"}]})
+ra = db.execute("SELECT read_at, read_by FROM notice_plants WHERE notice_id = ?", (nid_a,)).fetchone()
+requests.post(BASE + "/api/agent/report", headers=agent_headers(ta),
+              json={"consent": True, "notices_read": [{"id": nid_a, "by": "Altro"}]})
+check(ra[0] and ra[0] < "2999" and db.execute("SELECT read_by FROM notice_plants WHERE notice_id = ?", (nid_a,)).fetchone()[0] == ra[1]
+      and "<b>Maria</b>" not in admin.get(BASE + "/comunicazioni").text,
+      "comunicazioni: niente letture nel futuro, la prima lettura non si riscrive, il nome è solo testo")
 form_post(let, "/comunicazioni", "/comunicazioni", {"title": "Dal lettore", "text": "x", "tutti": "1"})
 check(not db.execute("SELECT 1 FROM notices WHERE title = 'Dal lettore'").fetchone(), "comunicazioni: il ruolo lettura non può inviarle")
 tid_u = requests.post(BASE + "/api/agent/tickets", headers=agent_headers(ta),
