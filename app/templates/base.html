@@ -17,7 +17,7 @@
     <a href="/" class="{{ 'on' if p == '/' }}">Panoramica</a>
     <a href="/clienti" class="{{ 'on' if p.startswith('/clienti') or p.startswith('/impianti') }}">Clienti</a>
     <a href="/ticket" class="{{ 'on' if p.startswith('/ticket') }}">Ticket</a>
-    <a href="/comunicazioni" class="{{ 'on' if p.startswith('/comunicazioni') }}">Comunicazioni</a>
+    <a href="/comunicazioni" class="{{ 'on' if p.startswith('/comunicazioni') }}">Comunicazioni{% if notices_unread %}<span class="nav-n" title="Comunicazioni non ancora lette da tutti i clienti">{{ notices_unread }}</span>{% endif %}</a>
     {% if can(user, 'users') %}<a href="/utenti" class="{{ 'on' if p.startswith('/utenti') }}">Utenti</a>{% endif %}
     {% if can(user, 'companies') %}<a href="/aziende" class="{{ 'on' if p.startswith('/aziende') }}">Aziende</a>{% endif %}
     {% if can(user, 'settings') %}<a href="/impostazioni" class="{{ 'on' if p.startswith('/impostazioni') }}">Impostazioni</a>{% endif %}

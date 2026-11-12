@@ -9,6 +9,7 @@ import secrets
 import time
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from starlette.requests import Request
 from starlette.responses import JSONResponse, RedirectResponse, Response
@@ -49,11 +50,26 @@ def _as_ts(value):
     return db.parse_ts(value)
 
 
+def _local_zone():
+    """Fuso orario delle date mostrate: variabile TZ del container (es. Europe/Rome), altrimenti
+    Europe/Rome. Senza, il container Docker mostrerebbe gli orari in UTC (un'ora indietro d'inverno)."""
+    for name in (os.environ.get("TZ"), "Europe/Rome"):
+        if name:
+            try:
+                return ZoneInfo(name)
+            except (ZoneInfoNotFoundError, ValueError):
+                log.warning("Fuso orario %r non valido", name)
+    return timezone.utc
+
+
+LOCAL_TZ = _local_zone()
+
+
 def fmt_ts(value):
     ts = _as_ts(value)
     if not ts:
         return "—"
-    return ts.astimezone().strftime("%d/%m/%Y %H:%M")
+    return ts.astimezone(LOCAL_TZ).strftime("%d/%m/%Y %H:%M")
 
 
 def ago(value):
@@ -277,6 +293,7 @@ def render(request, name, **ctx):
         csrf=csrf_token(request),
         company=co["name"] if co else SERVER_TITLE,
         usage=usage(co["id"]) if co else {},
+        notices_unread=notices_unread(co["id"]) if co else 0,
         brand_color=co["brand_color"] if co else DEFAULT_COLOR,
         public_url=public_url(request),
         flash=take_flash(request, ctx),
@@ -859,6 +876,16 @@ LIMIT_MSG = {"clients": "Hai raggiunto il limite di {max_clients} clienti previs
                         "per aggiungerne altri chiedi al gestore del server di alzarlo.",
              "plants": "Hai raggiunto il limite di {max_plants} impianti previsto per la tua azienda: "
                        "per aggiungerne altri elimina un impianto o chiedi al gestore di alzare il limite."}
+
+
+NOTICE_BADGE_DAYS = 30   # una comunicazione non letta smette di contare dopo un mese (impianti spenti, case vuote)
+
+
+def notices_unread(company_id):
+    """Comunicazioni dell'ultimo mese che almeno un cliente non ha ancora letto: numero nel menu."""
+    since = (datetime.now(timezone.utc) - timedelta(days=NOTICE_BADGE_DAYS)).isoformat(timespec="seconds")
+    return db.one("SELECT COUNT(DISTINCT n.id) AS c FROM notices n JOIN notice_plants np ON np.notice_id = n.id "
+                  "WHERE n.company_id = ? AND np.read_at IS NULL AND n.created_at > ?", company_id, since)["c"]
 
 
 def usage(company_id):

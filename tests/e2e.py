@@ -234,13 +234,27 @@ try:
     check("Nuova comunicazione" in cp and f'name="plant" value="{pid}" checked' in cp, "comunicazioni: impianto preselezionato dalla sua pagina")
     r = web.post(BASE + "/comunicazioni", data={"csrf": csrf(cp), "title": "", "text": "x", "plant": str(pid)})
     check('class="toast err"' in r.text and "titolo" in r.text, "comunicazioni: titolo obbligatorio")
-    r = web.post(BASE + "/comunicazioni", data={"csrf": csrf(cp), "title": "Nuova funzione", "text": "Da oggi trovi\nle batterie scariche.",
+    r = web.post(BASE + "/comunicazioni", data={"csrf": csrf(cp), "title": "Nuova funzione (batterie)!", "text": "Da oggi trovi\nle batterie scariche_basse.",
                                                 "plant": [str(pid), "99999"]})
     check("inviata a 1 impianto" in r.text and db.execute("SELECT COUNT(*) FROM notice_plants").fetchone()[0] == 1,
           "comunicazioni: inviata solo agli impianti dell'azienda")
-    check(wait_for(lambda: "Comunicazioni di Rossi Impianti" in requests.get(PANEL).text, 40, 0.5)
-          and "le batterie scariche" in requests.get(PANEL, headers=mh).text,
-          "comunicazioni: il cliente la vede nel pannello (anche chi non è amministratore)")
+    state_notices = lambda: json.load(open(f"{S}/agentdata/state.json")).get("notices") or []
+    check(wait_for(state_notices, 40, 0.5), "(preparazione) l'agente ha ricevuto la comunicazione")
+    check('class="nav-n"' in web.get(BASE + "/").text, "dashboard: numero accanto a Comunicazioni finché non è letta")
+    phone = [c for c in ha_calls() if c["domain"] == "notify" and "Nuova funzione" in c["data"].get("title", "")]
+    bell = [c for c in ha_calls() if c["domain"] == "persistent_notification" and "Nuova funzione" in c["data"].get("title", "")]
+    check(phone and "\\" not in phone[0]["data"]["title"] + phone[0]["data"]["message"] and "(batterie)!" in phone[0]["data"]["title"]
+          and "scariche_basse" in phone[0]["data"]["message"] and bell and "\\(batterie\\)\\!" in bell[0]["data"]["title"],
+          "notifiche: sul telefono il testo senza barre, nella campanella con l'escape del Markdown")
+    tab = requests.get(PANEL + "?s=preferenze").text
+    check(re.search(r'\?s=richieste[^>]*>Richieste<span class="n">\d+</span>', tab), "pannello: comunicazione nuova contata sulla scheda Richieste")
+    pa_html = requests.get(PANEL).text
+    check("Comunicazioni di Rossi Impianti" in pa_html and 'class="new">Nuova' in pa_html,
+          "pannello: la comunicazione appena arrivata è segnata «Nuova»")
+    check('class="new">Nuova' not in requests.get(PANEL).text, "pannello: vista una volta, non è più «Nuova» per quell'utente")
+    mp_html = requests.get(PANEL, headers=mh).text
+    check("le batterie scariche" in mp_html and 'class="new">Nuova' in mp_html,
+          "comunicazioni: le vede anche chi non è amministratore, ognuno col suo «Nuova»")
     check(any(c["domain"] == "persistent_notification" and "Nuova funzione" in c["data"].get("title", "")
               and c["data"]["notification_id"].startswith("assistenza_comunicazione_") for c in ha_calls()),
           "comunicazioni: notifica al cliente in Home Assistant")
@@ -256,6 +270,7 @@ try:
     check(read and rb == "Roberta Bianchi" and "letta 1/1" in web.get(BASE + "/comunicazioni").text
           and "letta" in web.get(BASE + "/comunicazioni").text and "da Roberta Bianchi" in web.get(BASE + "/comunicazioni").text,
           "comunicazioni: letta nel pannello, l'installatore vede quando e da chi")
+    check('class="nav-n"' not in web.get(BASE + "/").text, "dashboard: letta da tutti, il numero accanto a Comunicazioni sparisce")
     check(any(c["domain"] == "persistent_notification" and c["service"] == "dismiss"
               and c["data"].get("notification_id") == f"assistenza_comunicazione_{nid}" for c in ha_calls()),
           "comunicazioni: letta, la notifica sparisce dalla campanella")
@@ -265,6 +280,15 @@ try:
     cp = web.get(BASE + "/comunicazioni").text
     web.post(BASE + f"/comunicazioni/{nid}/elimina", data={"csrf": csrf(cp)})
     check(wait_for(lambda: not json.load(open(f"{S}/agentdata/state.json"))["notices"], 40, 0.5), "comunicazioni: eliminata, l'agente la toglie")
+    cp = web.get(BASE + "/comunicazioni").text
+    web.post(BASE + "/comunicazioni", data={"csrf": csrf(cp), "title": "Sbagliata", "text": "da eliminare", "plant": str(pid)})
+    nid2 = db.execute("SELECT id FROM notices WHERE title='Sbagliata'").fetchone()[0]
+    wait_for(state_notices, 40, 0.5)
+    cp = web.get(BASE + "/comunicazioni").text
+    web.post(BASE + f"/comunicazioni/{nid2}/elimina", data={"csrf": csrf(cp)})
+    check(wait_for(lambda: any(c["service"] == "dismiss" and c["data"].get("notification_id") == f"assistenza_comunicazione_{nid2}"
+                               for c in ha_calls()), 40, 0.5),
+          "comunicazione eliminata prima di essere letta: la notifica sparisce anche dalla campanella")
     ro_cp = web.get(BASE + "/comunicazioni").text
     check("Nessuna comunicazione" in ro_cp, "comunicazioni: elenco vuoto dopo l'eliminazione")
 

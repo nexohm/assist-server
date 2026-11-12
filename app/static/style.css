@@ -224,3 +224,5 @@ td.right { text-align: right; } .nowrap { white-space: nowrap; }
 .jobs li { padding: 6px 0; border-bottom: 1px solid var(--line); }
 .jobs li:last-child { border-bottom: 0; }
 .btn[disabled] { opacity: .45; cursor: not-allowed; }
+.nav-n { display: inline-block; min-width: 18px; padding: 0 5px; margin-left: 5px; border-radius: 999px; font-size: .7rem;
+  font-weight: 700; line-height: 18px; text-align: center; color: #fff; background: var(--brand); vertical-align: 1px; }

@@ -144,7 +144,8 @@ curl -fsSL .../install.sh | sudo MODE=proxy SUITE_PORT=8086 bash          # exis
 ```
 
 The configuration lives in `/opt/ha-suite/.env` (see [`.env.example`](.env.example)); after a change run
-`sudo ha-suite riavvia`.
+`sudo ha-suite riavvia`. Dashboard dates use the **Europe/Rome** time zone; for another one add e.g.
+`TZ=Europe/Zurich` to the `.env` file.
 
 ## First start
 

@@ -143,7 +143,8 @@ curl -fsSL .../install.sh | sudo MODE=proxy SUITE_PORT=8086 bash        # proxy 
 ```
 
 La configurazione sta in `/opt/ha-suite/.env` (vedi [`.env.example`](.env.example)); dopo una modifica:
-`sudo ha-suite riavvia`.
+`sudo ha-suite riavvia`. Le date della dashboard sono nel fuso **Europe/Rome**; per un altro fuso aggiungi
+per esempio `TZ=Europe/Zurich` nel file `.env`.
 
 ## Primo avvio
 

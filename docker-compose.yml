@@ -13,6 +13,8 @@ services:
     restart: unless-stopped
     environment:
       SECURE_COOKIES: "1"
+      # Fuso orario delle date mostrate nella dashboard (TZ=... nel file .env per cambiarlo)
+      TZ: ${TZ:-Europe/Rome}
     ports:
       # Con Caddy resta raggiungibile solo da questa macchina; con un proxy esterno impostare SUITE_BIND=0.0.0.0
       - "${SUITE_BIND:-127.0.0.1}:${SUITE_PORT:-8080}:8080"

@@ -213,8 +213,10 @@ check(agent.state.get("excluded") == before, "pannello: un altro sito non può e
 # Testo deciso dal server che finisce nelle notifiche di Home Assistant (Markdown): niente link né immagini
 from agent.main import Agent as _Agent  # noqa: E402
 dirty = _Agent._plain("Aggiorna [qui](https://evil.example) ![t](https://evil.example/pixel.png) <img src=x onerror=alert(1)>")
-check("](" not in dirty.replace("\\]\\(", "") and "<img" not in dirty and "\\[qui\\]" in dirty,
-      "notifiche: link e immagini inviati dal server non diventano cliccabili in Home Assistant", dirty)
+bell = _Agent._md(dirty)
+check("](" not in dirty and "<img" not in dirty and "qui (https://evil.example)" in dirty and "\\" not in dirty
+      and "](" not in bell and "\\(" in bell,
+      "notifiche: link e immagini inviati dal server non diventano link nascosti (indirizzo in vista, senza barre sul telefono)", dirty)
 
 # Nome di entità da escludere: solo dominio.nome (niente caratteri che finirebbero in HTML o nei filtri)
 import re as _re  # noqa: E402
