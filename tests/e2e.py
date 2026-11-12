@@ -31,6 +31,17 @@ def panel_post(action, data):
     """Modulo del pannello: ogni invio porta il token anti-CSRF letto dalla pagina."""
     return requests.post(PANEL + action, data={"csrf": csrf(requests.get(PANEL).text), **data})
 
+def offline_alert(n0, extra=lambda m: True, timeout=15):
+    """Simula un impianto senza contatto da anni finché arriva l'avviso. L'agente in prova continua a
+    collegarsi e riscrive l'ultimo contatto: su una macchina lenta può farlo prima del controllo."""
+    end = time.time() + timeout
+    while time.time() < end:
+        db.execute("UPDATE plants SET last_seen=? WHERE id=?", ("2020-01-01T00:00:00+00:00", pid)); db.commit()
+        if any("Impianto offline" in m and extra(m) for m in tg_messages()[n0:]):
+            return True
+        time.sleep(0.2)
+    return False
+
 def wait_for(fn, timeout=30, step=0.5):
     end = time.time() + timeout
     while time.time() < end:
@@ -345,8 +356,7 @@ try:
     check(any("Risposta del cliente" in m and "Perfetto grazie" in m for m in msgs), "Telegram: notifica risposta del cliente")
     # offline: simulo l'ultimo contatto 10 minuti fa (il controllo gira ogni secondo nei test)
     n0 = len(tg_messages())
-    db.execute("UPDATE plants SET last_seen=? WHERE id=?", ("2020-01-01T00:00:00+00:00", pid)); db.commit()
-    check(wait_for(lambda: any("Impianto offline" in m for m in tg_messages()[n0:]), 10, 0.3), "Telegram: impianto offline")
+    check(offline_alert(n0), "Telegram: impianto offline")
     check(wait_for(lambda: any("Di nuovo online" in m for m in tg_messages()[n0:]), 40, 0.5), "Telegram: impianto di nuovo online")
     # minuti prima dell'avviso offline: dell'azienda e del singolo impianto
     st = web.get(BASE + "/impostazioni").text
@@ -368,9 +378,7 @@ try:
     db.execute("UPDATE plants SET last_seen=? WHERE id=?", (ten_min_ago, pid)); db.commit()
     time.sleep(3)
     check(not any("Impianto offline" in m for m in tg_messages()[n0:]), "impianto con 60 minuti: nessun avviso dopo 10 minuti senza contatto")
-    db.execute("UPDATE plants SET last_seen=? WHERE id=?", ("2020-01-01T00:00:00+00:00", pid)); db.commit()
-    check(wait_for(lambda: any("Impianto offline" in m and "più di 1 ora" in m for m in tg_messages()[n0:]), 10, 0.3),
-          "avviso offline col tempo scelto per l'impianto")
+    check(offline_alert(n0, lambda m: "più di 1 ora" in m), "avviso offline col tempo scelto per l'impianto")
     check(wait_for(lambda: any("Di nuovo online" in m for m in tg_messages()[n0:]), 40, 0.5), "di nuovo online dopo l'avviso")
     page = web.get(BASE + f"/impianti/{pid}").text
     r = web.post(BASE + f"/impianti/{pid}/offline", data={"csrf": csrf(page), "offline_minutes": ""})
