@@ -248,25 +248,70 @@ ma anche Keycloak, Zitadel, Authelia e simili. È una strada in più: il login c
 sempre disponibile, anche se il provider non risponde. Il provider non crea utenti e non decide i ruoli: entra
 solo chi esiste già tra gli utenti dell'azienda, con il ruolo che ha nella dashboard.
 
-**In Authentik**
-1. **Applicazioni → Crea con procedura guidata**, provider **OAuth2/OpenID**, tipo di client **Confidential**.
-2. Redirect URI (modalità *Strict*): `https://<indirizzo-del-server>/accesso/callback` — lo trovi già pronto da
-   copiare in **Impostazioni → Accesso con Authentik**.
-3. Scegli una **chiave di firma** e lascia gli scope `openid`, `email`, `profile`.
+Serve un Authentik raggiungibile in **https** dal server e dai browser dei tecnici (per esempio
+`https://auth.tuodominio.it`). Nell'esempio il server della dashboard è `https://assistenza.tuodominio.it`.
 
-**Nella dashboard** (amministratore dell'azienda): **Impostazioni → Accesso con Authentik**, incolla
-l'*OpenID Configuration Issuer* dell'applicazione (es. `https://auth.tuodominio.it/application/o/assistenza/`),
-Client ID e Client secret, premi **Prova collegamento**, spunta **Attiva** e salva. Compare il **link d'accesso
-dell'azienda** (`/accesso/<codice>`) da mandare ai tecnici: la pagina di accesso non elenca le aziende del server,
-e il pulsante «Accedi con Authentik» compare nei browser che hanno già usato quel link.
+### 1. Crea l'applicazione in Authentik
 
-**Collegare gli utenti.** Ogni utente entra una volta con la password e in **Il mio account** preme
-**Collega Authentik**: così si dimostra che l'utente della dashboard e quello di Authentik sono la stessa persona.
+1. Entra nell'**interfaccia amministrativa** di Authentik → **Applicazioni → Applicazioni → Crea con procedura
+   guidata**.
+2. **Applicazione**: un nome (es. `Nexohm Assist`) e uno slug (es. `nexohm-assist`). L'URL di avvio può essere
+   l'indirizzo della dashboard.
+3. **Tipo di provider**: **OAuth2/OpenID Provider**.
+4. **Impostazioni del provider**:
+   - **Flusso di autorizzazione**: quello predefinito (implicito o esplicito, come preferisci);
+   - **Tipo di client**: **Confidential**;
+   - **Redirect URI**: modalità **Strict**, valore `https://assistenza.tuodominio.it/accesso/callback`. Lo trovi già
+     pronto da copiare in **Impostazioni → Accesso con Authentik** della dashboard;
+   - **Chiave di firma**: scegli una chiave RSA, per esempio `authentik Self-signed Certificate`. Senza chiave
+     Authentik firma con il client secret (HS256): funziona, ma è meglio una chiave RSA;
+   - **Impostazioni avanzate → Tipi di autorizzazione**: deve essere attivo **authorization_code**. La procedura
+     guidata lo attiva da sola; se il provider è stato creato in altro modo (per esempio dalle API) controllalo,
+     altrimenti Authentik risponde `invalid_request`;
+   - **Scope**: lascia `openid`, `email` e `profile`.
+5. Se vuoi che solo alcuni utenti di Authentik vedano l'applicazione, in **Associazioni di criteri/gruppi/utenti**
+   collega il gruppo dei tecnici. Altrimenti non serve: alla dashboard entra comunque solo chi ha un utente lì.
+6. Apri il provider appena creato e copia **OpenID Configuration Issuer**
+   (es. `https://auth.tuodominio.it/application/o/nexohm-assist/`), **Client ID** e **Client Secret**.
+
+### 2. Configura la dashboard
+
+Da amministratore dell'azienda, **Impostazioni → Accesso con Authentik**:
+
+1. spunta **Attiva l'accesso con il provider**;
+2. incolla **Indirizzo del provider (issuer)**, **Client ID** e **Client secret**;
+3. **Nome del pulsante**: quello che vedranno i tecnici, per esempio `Authentik` («Accedi con Authentik»);
+4. lascia spento **Collega in automatico gli utenti con la stessa email** (vedi sotto);
+5. premi **Salva**, poi **Prova collegamento**.
+
+Dopo il salvataggio compare il **link d'accesso dell'azienda** (`/accesso/<codice>`) da mandare ai tecnici. La
+pagina di accesso non elenca le aziende del server, quindi il pulsante «Accedi con Authentik» compare solo nei
+browser che hanno già usato quel link o fatto il collegamento.
+
+### 3. Collega gli utenti
+
+Ogni utente entra **una volta** con nome utente e password, va in **Il mio account** e preme **Collega
+Authentik**: passa da Authentik e torna con «Collegato». Così si dimostra che l'utente della dashboard e quello
+di Authentik sono la stessa persona. Da quel momento può usare «Accedi con Authentik» (o il link dell'azienda).
+
 In alternativa l'amministratore può attivare il **collegamento automatico per email**: va bene solo se in
 Authentik gli utenti non possono cambiarsi l'email da soli (il flusso predefinito delle impostazioni utente lo
 permette), altrimenti un tecnico potrebbe mettere l'email di un amministratore ed entrare al suo posto. Dopo il
 primo accesso conta l'identità di Authentik, non più l'email. Da **Utenti** si può scollegare un utente;
 cambiando provider o applicazione tutti i collegamenti si azzerano.
+
+### Se qualcosa non va
+
+| Messaggio | Cosa controllare |
+|---|---|
+| Authentik mostra «Redirect URI non valido» | Il Redirect URI in Authentik deve essere identico a quello mostrato in Impostazioni, senza `/` finale; l'indirizzo pubblico del server deve essere quello giusto. |
+| «Authentik non ha concesso l'accesso (invalid_request)» | Nel provider manca il tipo di autorizzazione **authorization_code** (Impostazioni avanzate). |
+| «Authentik non ha concesso l'accesso (access_denied)» | L'utente ha annullato, oppure in Authentik non ha il permesso di usare l'applicazione (criteri o gruppi). |
+| «l'indirizzo del provider non corrisponde all'issuer» | Copia esattamente l'*OpenID Configuration Issuer*, con la `/` finale. |
+| «il provider deve usare https» / «provider non raggiungibile» | Il server della dashboard deve raggiungere Authentik in https (DNS, certificato, firewall). |
+| «non è ancora collegato» | L'utente deve prima collegarsi da **Il mio account**, oppure va attivato il collegamento per email. |
+
+Nei log del server (`ha-suite log`) e in Authentik (**Eventi → Registri**) trovi i dettagli.
 
 ## Accesso amministratore temporaneo
 

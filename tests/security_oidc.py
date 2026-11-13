@@ -151,6 +151,13 @@ check(logged_as(s) == "luca", "token firmato HS256 col client secret (Authentik 
 s = requests.Session()
 r = sso(s, key, sub="authentik-luca", mode="denied")
 check(not logged_as(s) and "non ha concesso" in r.text, "accesso annullato sul provider -> messaggio chiaro")
+s = requests.Session()
+r = sso(s, key, sub="authentik-luca", mode="malformed")
+check(not logged_as(s) and "(invalid_request)" in r.text and "authorization_code" in r.text,
+      "richiesta rifiutata dal provider (invalid_request) -> suggerimento sui tipi di autorizzazione")
+r = tec.get(BASE + "/accesso/callback?state=scaduto&code=x")
+check(r.url.split("#")[0].endswith("/account") and "scaduta" in r.text and 'action="/login' not in r.text,
+      "errore del provider per chi è già dentro: messaggio in «Il mio account», senza modulo di accesso sotto il menu")
 
 # ---------------------------------------------------------------- state e codice
 provider(sub="authentik-luca")

@@ -2,7 +2,7 @@
 
 L'identità che «entra» e gli eventuali difetti del token si scelgono con POST /control (JSON):
   {"sub": "...", "email": "...", "email_verified": true, "mode": "ok"}
-mode: ok | hs256 | badsig | wrongaud | wrongiss | expired | badnonce | none | denied
+mode: ok | hs256 | badsig | wrongaud | wrongiss | expired | badnonce | none | denied | malformed
 Il provider controlla davvero client secret, PKCE, redirect_uri e uso unico del codice.
 Chiave RSA generata all'avvio senza librerie esterne (solo per le prove: lenta e non adatta all'uso reale).
 """
@@ -143,6 +143,8 @@ class H(BaseHTTPRequestHandler):
                 return self.send_json({"error": "invalid_request"}, 400)
             if STATE["mode"] == "denied":
                 params = {"error": "access_denied", "state": q["state"]}
+            elif STATE["mode"] == "malformed":   # come Authentik con un provider senza grant types
+                params = {"error": "invalid_request", "state": q["state"]}
             else:
                 code = secrets.token_urlsafe(16)
                 CODES[code] = {"challenge": q["code_challenge"], "redirect_uri": target, "nonce": q.get("nonce", "")}

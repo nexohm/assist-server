@@ -522,11 +522,30 @@ def _provider_origins(issuer):
     return sorted(o for o in found if o and all(ch not in o for ch in " ;,'\""))
 
 
+# Codici d'errore del provider con il suggerimento per sistemarlo (il testo del provider non si mostra)
+PROVIDER_HINTS = {
+    "invalid_request": "nel provider attiva il tipo di autorizzazione «authorization_code» (in Authentik: "
+                       "Provider → Modifica → Impostazioni avanzate → Tipi di autorizzazione)",
+    "unauthorized_client": "nel provider attiva il tipo di autorizzazione «authorization_code»",
+    "invalid_scope": "nel provider lascia gli scope openid, email e profile",
+    "access_denied": "l'utente ha annullato, oppure nel provider non ha il permesso di usare l'applicazione",
+}
+
+
+def _provider_refused(label, code):
+    code = str(code)[:60]
+    hint = PROVIDER_HINTS.get(code)
+    return f"{label} non ha concesso l'accesso ({code})" + (f": {hint}." if hint else ".")
+
+
 def _sso_redirect_uri(request):
     return public_url(request).rstrip("/") + oidc.CALLBACK_PATH
 
 
 def _sso_error(request, text, status=400):
+    if current_user(request):
+        # già dentro (con la password): niente modulo di accesso sotto il menu, l'errore va in «Il mio account»
+        return redirect("/account#sso", text, request, error=True)
     resp = render(request, "login.html", error=text, next="/", email_reset=accounts.email_enabled(),
                   sso=_remembered_sso(request))
     resp.status_code = status
@@ -571,7 +590,7 @@ async def sso_callback(request: Request):
     label = oidc.settings(co["id"])["label"]
     if q.get("error"):
         # l'utente ha annullato, o il provider non gli permette l'applicazione
-        return _sso_error(request, f"{label} non ha concesso l'accesso ({q.get('error')[:60]}).", 403)
+        return _sso_error(request, _provider_refused(label, q.get("error")), 403)
     try:
         claims = await asyncio.to_thread(oidc.finish, pending, q.get("code"), _sso_redirect_uri(request))
     except oidc.OIDCError as e:
@@ -619,7 +638,7 @@ async def _sso_link_callback(request, pending, co, q):
         return _sso_error(request, "Collegamento non riuscito: accedi di nuovo con la password e riprova.", 403)
     label = oidc.settings(co["id"])["label"]
     if q.get("error"):
-        return redirect("/account#sso", f"{label} non ha concesso l'accesso ({q.get('error')[:60]}).", request, error=True)
+        return redirect("/account#sso", _provider_refused(label, q.get("error")), request, error=True)
     try:
         claims = await asyncio.to_thread(oidc.finish, pending, q.get("code"), _sso_redirect_uri(request))
     except oidc.OIDCError as e:
