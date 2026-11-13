@@ -5,8 +5,15 @@ from starlette.responses import PlainTextResponse
 MAX_REQUEST = 1024 * 1024  # 1 MB: moduli della dashboard e API agente (che ha già un suo limite più basso)
 
 # La dashboard non carica nulla da altri siti e non deve poter essere inserita in pagine altrui.
-CSP = ("default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
-       "connect-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'; object-src 'none'")
+def csp(form_action=()):
+    """Il browser applica form-action anche ai redirect dopo l'invio di un modulo: la pagina che avvia
+    l'accesso con il provider (POST, poi 303 verso il provider) deve elencare l'origine del provider."""
+    targets = " ".join(["'self'", *form_action])
+    return ("default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
+            f"connect-src 'self'; form-action {targets}; frame-ancestors 'none'; base-uri 'none'; object-src 'none'")
+
+
+CSP = csp()
 
 
 class TooLarge(Exception):

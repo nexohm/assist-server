@@ -7,6 +7,7 @@ import os
 import re
 import secrets
 import time
+import urllib.parse
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -18,6 +19,7 @@ from starlette.templating import Jinja2Templates
 
 from . import db, notify, oidc, sanitize, secrets_store, updates
 from .agent_api import is_online, ring
+from .middleware import csp
 from . import accounts
 from .security import (ROLE_LABELS, ROLES, can, hash_password, new_pair_code, new_setup_code,
                        verify_password, DUMMY_HASH)
@@ -500,6 +502,24 @@ def _remembered_sso(request):
         return None
     return {"url": f"/accesso/{oidc.settings(co['id'])['oidc_key']}", "label": oidc.settings(co["id"])["label"],
             "company": co["name"]}
+
+
+def _origin(url):
+    parts = urllib.parse.urlsplit(url)
+    return f"{parts.scheme}://{parts.netloc}" if parts.scheme in ("https", "http") and parts.netloc else None
+
+
+def _provider_origins(issuer):
+    """Origini a cui il pulsante «Collega» deve poter arrivare: quella della pagina di autorizzazione
+    del provider (dalla configurazione, in cache) e, se il provider non risponde, quella dell'issuer."""
+    if not oidc.valid_issuer(issuer):
+        return []
+    found = {_origin(issuer)}
+    try:
+        found.add(_origin(oidc.discover(issuer)["authorization_endpoint"]))
+    except oidc.OIDCError:
+        pass
+    return sorted(o for o in found if o and all(ch not in o for ch in " ;,'\""))
 
 
 def _sso_redirect_uri(request):
@@ -1346,7 +1366,12 @@ async def account_page(request: Request):
             return redirect("/", "Password cambiata.", request) if user["must_change"] else \
                 redirect("/account", "Password cambiata.", request)
     s = oidc.settings(user["company_id"]) if user.get("company_id") else None
-    return render(request, "account.html", errors=errors, sso=s if s and s["enabled"] else None)
+    resp = render(request, "account.html", errors=errors, sso=s if s and s["enabled"] else None)
+    if s and s["enabled"]:
+        origins = await asyncio.to_thread(_provider_origins, s["oidc_issuer"])
+        if origins:
+            resp.headers["Content-Security-Policy"] = csp(origins)
+    return resp
 
 
 @guard("users")

@@ -106,6 +106,12 @@ check("Accedi con Authentik Rossi" in anon.get(BASE + "/login").text,
       "dopo aver usato il link il browser mostra il pulsante del provider nella pagina di accesso")
 
 # ---------------------------------------------------------------- collegamento da «Il mio account»
+acc = tec.get(BASE + "/account")
+fa = re.search(r"form-action ([^;]+)", acc.headers.get("Content-Security-Policy", ""))
+check(fa and fa.group(1).split() == ["'self'", OIDC.rstrip("/")],
+      "«Il mio account»: la CSP permette al pulsante «Collega» di arrivare al provider (form-action), e solo a lui")
+fa = re.search(r"form-action ([^;]+)", tec.get(BASE + "/").headers.get("Content-Security-Policy", ""))
+check(fa and fa.group(1).strip() == "'self'", "le altre pagine restano con form-action 'self'")
 provider(sub="authentik-luca", email="luca@rossi.it")
 r = form_post(tec, "/account/accesso", "/account", {"azione": "collega"})
 check("Collegato a Authentik Rossi come authentik-luca" in r.text and db.execute(
