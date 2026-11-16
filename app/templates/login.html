@@ -15,6 +15,11 @@
       <p style="margin-top:20px"><button class="btn">Accedi</button></p>
     </form>
     {% if email_reset %}<p class="small" style="margin:12px 0 0"><a href="/recupero">Password dimenticata?</a></p>{% endif %}
+    {% if sso %}
+    <p class="muted small" style="margin:18px 0 8px">oppure</p>
+    <p style="margin:0"><a class="btn ghost" href="{{ sso.url }}{% if next and next != '/' %}?next={{ next | urlencode }}{% endif %}">Accedi con {{ sso.label }}</a></p>
+    <p class="muted small" style="margin:6px 0 0">{{ sso.company }}</p>
+    {% endif %}
   </div>
 </div>
 {% endblock %}

@@ -37,11 +37,12 @@ assistenza e, solo se il cliente lo concede, entra come amministratore per qualc
 8. [Più aziende sullo stesso server](#più-aziende-sullo-stesso-server)
 9. [Notifiche Telegram](#notifiche-telegram)
 10. [Password dimenticata ed email](#password-dimenticata-ed-email)
-11. [Accesso amministratore temporaneo](#accesso-amministratore-temporaneo)
-12. [Gestione quotidiana: il comando `ha-suite`](#gestione-quotidiana-il-comando-ha-suite)
-13. [Aggiornamenti, backup e ripristino](#aggiornamenti-backup-e-ripristino)
-14. [Sicurezza e privacy](#sicurezza-e-privacy)
-15. [Sviluppo, prove e rilasci](#sviluppo-prove-e-rilasci)
+11. [Accesso con Authentik (OpenID Connect)](#accesso-con-authentik-openid-connect)
+12. [Accesso amministratore temporaneo](#accesso-amministratore-temporaneo)
+13. [Gestione quotidiana: il comando `ha-suite`](#gestione-quotidiana-il-comando-ha-suite)
+14. [Aggiornamenti, backup e ripristino](#aggiornamenti-backup-e-ripristino)
+15. [Sicurezza e privacy](#sicurezza-e-privacy)
+16. [Sviluppo, prove e rilasci](#sviluppo-prove-e-rilasci)
 
 ---
 
@@ -71,16 +72,28 @@ cifrato in HTTPS. L'agente esegue solo una lista chiusa di comandi e non può mo
 - **Clienti e impianti**: anagrafica, rinomina ed eliminazione (riscrivendo il nome), codice di abbinamento con
   pulsante *Copia*, revoca e nuovo abbinamento, collegamento all'Home Assistant del cliente.
 - **Diagnostica**: entità non disponibili o orfane, batterie scariche, aggiornamenti disponibili, automazioni
-  spente, spazio su disco, età dell'ultimo backup.
+  spente, spazio su disco, età dell'ultimo backup. Le entità sono elencate per tipo, col nome e l'id.
 - **Comandi remoti**: diagnostica immediata e ping, con storico.
-- **Ticket**: richieste dei clienti con diagnostica allegata, risposte, stato e assegnazione a un tecnico.
+- **Backup e aggiornamenti** dalla pagina dell'impianto: backup presenti (anche su NAS e cloud), stato del backup
+  automatico, «Fai un backup ora» e installazione degli aggiornamenti (Home Assistant, sistema operativo,
+  Supervisor, add-on, integrazioni e firmware). Solo con l'accesso remoto attivo; prima di ogni aggiornamento
+  l'agente fa un backup completo e il cliente riceve una notifica.
+- **Ticket**: richieste dei clienti con diagnostica allegata, risposte, stato e assegnazione a un tecnico; si vede
+  quale utente di Home Assistant ha aperto la richiesta.
+- **Comunicazioni** ai clienti (novità, manutenzioni, nuove funzioni): a uno, più o tutti gli impianti, con la
+  conferma di ricezione e di lettura; il cliente le legge nel pannello Assistenza e riceve una notifica, e 30 minuti
+  dopo la lettura spariscono dal suo pannello.
 - **Accesso amministratore temporaneo** all'Home Assistant del cliente, solo se il cliente lo concede.
 - **Utenti** con ruoli (amministratore, tecnico, sola lettura) e **più aziende** sullo stesso server.
-- **Notifiche Telegram**: nuovi ticket, risposte, impianti offline o in stato critico.
+- **Accesso con Authentik** o un altro provider OpenID Connect, scelto da ogni azienda (oltre alla password).
+- **Notifiche Telegram**: nuovi ticket, risposte, impianti offline o in stato critico; i minuti prima
+  dell'avviso offline si scelgono per azienda e per singolo impianto.
 - **Avvisi di aggiornamento** del server e degli agenti; conferme animate a ogni salvataggio.
 
 **Pannello Assistenza del cliente** (nell'add-on, vedi [`nexohm/ha-addons`](https://github.com/nexohm/ha-addons))
 - schede **Richieste**, **Impianto**, **Preferenze**;
+- visibile a tutti gli utenti di casa: chi non è amministratore apre richieste e vede solo le sue;
+- **comunicazioni** dell'installatore in cima alla pagina;
 - richieste di assistenza e risposte, con notifiche in Home Assistant o sul telefono;
 - **accesso remoto a tempo** (1 ora, 4 ore, 24 ore, 7 giorni o senza scadenza) e sospensione in un clic;
 - **entità escluse** dai controlli (anche con `*`) oppure controllo solo delle entità con certe **etichette**;
@@ -130,7 +143,8 @@ curl -fsSL .../install.sh | sudo MODE=proxy SUITE_PORT=8086 bash        # proxy 
 ```
 
 La configurazione sta in `/opt/ha-suite/.env` (vedi [`.env.example`](.env.example)); dopo una modifica:
-`sudo ha-suite riavvia`.
+`sudo ha-suite riavvia`. Le date della dashboard sono nel fuso **Europe/Rome**; per un altro fuso aggiungi
+per esempio `TZ=Europe/Zurich` nel file `.env`.
 
 ## Primo avvio
 
@@ -198,6 +212,10 @@ stati critici. In **Impostazioni → Notifiche Telegram**:
 3. apri il tuo bot, premi **Avvia**, poi **Rileva chat ID**;
 4. **Invia prova**.
 
+Nella stessa sezione scegli dopo quanti minuti senza contatto arriva l'avviso **offline** (predefinito 3, fino a
+24 ore). Un impianto con una connessione instabile può avere un valore suo: lo cambi nella sua pagina, sotto
+*Notifica offline*.
+
 ## Password dimenticata ed email
 
 Il recupero funziona sempre con un **link monouso** (valido 30 minuti, una volta sola) che permette all'utente di
@@ -222,6 +240,78 @@ Consigli:
 - il server **controlla ogni giorno** che la posta funzioni e **ogni 30 giorni** invia un'email di controllo al
   gestore: così le chiavi che scadono se inutilizzate (Brevo, per esempio, dopo 90 giorni) restano attive;
 - se qualcosa smette di funzionare, il gestore vede un avviso in dashboard e, se ha Telegram, riceve un messaggio.
+
+## Accesso con Authentik (OpenID Connect)
+
+Ogni azienda può far entrare i suoi utenti con l'account del proprio provider **OpenID Connect**: Authentik,
+ma anche Keycloak, Zitadel, Authelia e simili. È una strada in più: il login con nome utente e password resta
+sempre disponibile, anche se il provider non risponde. Il provider non crea utenti e non decide i ruoli: entra
+solo chi esiste già tra gli utenti dell'azienda, con il ruolo che ha nella dashboard.
+
+Serve un Authentik raggiungibile in **https** dal server e dai browser dei tecnici (per esempio
+`https://auth.tuodominio.it`). Nell'esempio il server della dashboard è `https://assistenza.tuodominio.it`.
+
+### 1. Crea l'applicazione in Authentik
+
+1. Entra nell'**interfaccia amministrativa** di Authentik → **Applicazioni → Applicazioni → Crea con procedura
+   guidata**.
+2. **Applicazione**: un nome (es. `Nexohm Assist`) e uno slug (es. `nexohm-assist`). L'URL di avvio può essere
+   l'indirizzo della dashboard.
+3. **Tipo di provider**: **OAuth2/OpenID Provider**.
+4. **Impostazioni del provider**:
+   - **Flusso di autorizzazione**: quello predefinito (implicito o esplicito, come preferisci);
+   - **Tipo di client**: **Confidential**;
+   - **Redirect URI**: modalità **Strict**, valore `https://assistenza.tuodominio.it/accesso/callback`. Lo trovi già
+     pronto da copiare in **Impostazioni → Accesso con Authentik** della dashboard;
+   - **Chiave di firma**: scegli una chiave RSA, per esempio `authentik Self-signed Certificate`. Senza chiave
+     Authentik firma con il client secret (HS256): funziona, ma è meglio una chiave RSA;
+   - **Impostazioni avanzate → Tipi di autorizzazione**: deve essere attivo **authorization_code**. La procedura
+     guidata lo attiva da sola; se il provider è stato creato in altro modo (per esempio dalle API) controllalo,
+     altrimenti Authentik risponde `invalid_request`;
+   - **Scope**: lascia `openid`, `email` e `profile`.
+5. Se vuoi che solo alcuni utenti di Authentik vedano l'applicazione, in **Associazioni di criteri/gruppi/utenti**
+   collega il gruppo dei tecnici. Altrimenti non serve: alla dashboard entra comunque solo chi ha un utente lì.
+6. Apri il provider appena creato e copia **OpenID Configuration Issuer**
+   (es. `https://auth.tuodominio.it/application/o/nexohm-assist/`), **Client ID** e **Client Secret**.
+
+### 2. Configura la dashboard
+
+Da amministratore dell'azienda, **Impostazioni → Accesso con Authentik**:
+
+1. spunta **Attiva l'accesso con il provider**;
+2. incolla **Indirizzo del provider (issuer)**, **Client ID** e **Client secret**;
+3. **Nome del pulsante**: quello che vedranno i tecnici, per esempio `Authentik` («Accedi con Authentik»);
+4. lascia spento **Collega in automatico gli utenti con la stessa email** (vedi sotto);
+5. premi **Salva**, poi **Prova collegamento**.
+
+Dopo il salvataggio compare il **link d'accesso dell'azienda** (`/accesso/<codice>`) da mandare ai tecnici. La
+pagina di accesso non elenca le aziende del server, quindi il pulsante «Accedi con Authentik» compare solo nei
+browser che hanno già usato quel link o fatto il collegamento.
+
+### 3. Collega gli utenti
+
+Ogni utente entra **una volta** con nome utente e password, va in **Il mio account** e preme **Collega
+Authentik**: passa da Authentik e torna con «Collegato». Così si dimostra che l'utente della dashboard e quello
+di Authentik sono la stessa persona. Da quel momento può usare «Accedi con Authentik» (o il link dell'azienda).
+
+In alternativa l'amministratore può attivare il **collegamento automatico per email**: va bene solo se in
+Authentik gli utenti non possono cambiarsi l'email da soli (il flusso predefinito delle impostazioni utente lo
+permette), altrimenti un tecnico potrebbe mettere l'email di un amministratore ed entrare al suo posto. Dopo il
+primo accesso conta l'identità di Authentik, non più l'email. Da **Utenti** si può scollegare un utente;
+cambiando provider o applicazione tutti i collegamenti si azzerano.
+
+### Se qualcosa non va
+
+| Messaggio | Cosa controllare |
+|---|---|
+| Authentik mostra «Redirect URI non valido» | Il Redirect URI in Authentik deve essere identico a quello mostrato in Impostazioni, senza `/` finale; l'indirizzo pubblico del server deve essere quello giusto. |
+| «Authentik non ha concesso l'accesso (invalid_request)» | Nel provider manca il tipo di autorizzazione **authorization_code** (Impostazioni avanzate). |
+| «Authentik non ha concesso l'accesso (access_denied)» | L'utente ha annullato, oppure in Authentik non ha il permesso di usare l'applicazione (criteri o gruppi). |
+| «l'indirizzo del provider non corrisponde all'issuer» | Copia esattamente l'*OpenID Configuration Issuer*, con la `/` finale. |
+| «il provider deve usare https» / «provider non raggiungibile» | Il server della dashboard deve raggiungere Authentik in https (DNS, certificato, firewall). |
+| «non è ancora collegato» | L'utente deve prima collegarsi da **Il mio account**, oppure va attivato il collegamento per email. |
+
+Nei log del server (`ha-suite log`) e in Authentik (**Eventi → Registri**) trovi i dettagli.
 
 ## Accesso amministratore temporaneo
 

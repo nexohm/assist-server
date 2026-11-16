@@ -7,16 +7,19 @@ import os
 import re
 import secrets
 import time
+import urllib.parse
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from starlette.requests import Request
 from starlette.responses import JSONResponse, RedirectResponse, Response
 from starlette.routing import Route
 from starlette.templating import Jinja2Templates
 
-from . import db, notify, sanitize, secrets_store, updates
+from . import db, notify, oidc, sanitize, secrets_store, updates
 from .agent_api import is_online, ring
+from .middleware import csp
 from . import accounts
 from .security import (ROLE_LABELS, ROLES, can, hash_password, new_pair_code, new_setup_code,
                        verify_password, DUMMY_HASH)
@@ -31,6 +34,13 @@ ALLOWED_COMMANDS = {
 TICKET_STATUS = {"aperto": "Aperto", "in_lavorazione": "In lavorazione", "chiuso": "Chiuso"}
 # Comandi dell'accesso amministratore: hanno pulsanti e permesso propri (li concede il cliente)
 ADMIN_COMMANDS = {"admin_password": "Accesso amministratore: nuova password", "admin_close": "Accesso amministratore: chiusura"}
+# Backup e aggiornamenti: pulsanti propri nella pagina dell'impianto, servono accesso remoto e agente 0.1.9
+MAINTENANCE_COMMANDS = {"create_backup": "Backup completo", "install_update": "Aggiornamento"}
+UPDATE_KIND_LABELS = {"core": "Home Assistant", "os": "Sistema operativo", "supervisor": "Supervisor",
+                      "addon": "Add-on", "altro": "Integrazione o dispositivo"}
+JOB_STATUS = {"in_corso": "In corso", "completato": "Completato", "errore": "Non riuscito"}
+RECURRENCE_LABELS = {"never": "Disattivato", "daily": "Ogni giorno", "custom_days": "Nei giorni scelti"}
+DAY_LABELS = {"mon": "lun", "tue": "mar", "wed": "mer", "thu": "gio", "fri": "ven", "sat": "sab", "sun": "dom"}
 COMMAND_STATUS = {"in_attesa": "In attesa", "inviato": "Inviato", "completato": "Completato", "errore": "Errore"}
 
 
@@ -42,11 +52,26 @@ def _as_ts(value):
     return db.parse_ts(value)
 
 
+def _local_zone():
+    """Fuso orario delle date mostrate: variabile TZ del container (es. Europe/Rome), altrimenti
+    Europe/Rome. Senza, il container Docker mostrerebbe gli orari in UTC (un'ora indietro d'inverno)."""
+    for name in (os.environ.get("TZ"), "Europe/Rome"):
+        if name:
+            try:
+                return ZoneInfo(name)
+            except (ZoneInfoNotFoundError, ValueError):
+                log.warning("Fuso orario %r non valido", name)
+    return timezone.utc
+
+
+LOCAL_TZ = _local_zone()
+
+
 def fmt_ts(value):
     ts = _as_ts(value)
     if not ts:
         return "—"
-    return ts.astimezone().strftime("%d/%m/%Y %H:%M")
+    return ts.astimezone(LOCAL_TZ).strftime("%d/%m/%Y %H:%M")
 
 
 def ago(value):
@@ -81,11 +106,50 @@ def asset(name):
 
 templates.env.filters["ts"] = fmt_ts
 templates.env.filters["ago"] = ago
+templates.env.filters["minutes"] = notify.fmt_minutes
 templates.env.globals.update(agent_outdated=updates.agent_outdated, latest_agent=updates.latest_agent,
                              TICKET_STATUS=TICKET_STATUS, COMMAND_STATUS=COMMAND_STATUS,
                              ROLE_LABELS=ROLE_LABELS, ALLOWED_COMMANDS=ALLOWED_COMMANDS,
-                             COMMAND_LABELS={**ALLOWED_COMMANDS, **ADMIN_COMMANDS}, can=can,
+                             COMMAND_LABELS={**ALLOWED_COMMANDS, **ADMIN_COMMANDS, **MAINTENANCE_COMMANDS}, can=can,
+                             UPDATE_KIND_LABELS=UPDATE_KIND_LABELS, JOB_STATUS=JOB_STATUS,
+                             RECURRENCE_LABELS=RECURRENCE_LABELS, DAY_LABELS=DAY_LABELS,
                              is_online=is_online, asset=asset)
+
+
+# Nomi dei tipi di entità di Home Assistant, per raggruppare gli elenchi della diagnostica
+DOMAIN_LABELS = {
+    "sensor": "Sensori", "binary_sensor": "Sensori binari", "light": "Luci", "switch": "Interruttori",
+    "cover": "Tapparelle e tende", "climate": "Clima", "media_player": "Lettori multimediali", "camera": "Telecamere",
+    "lock": "Serrature", "fan": "Ventilatori", "vacuum": "Aspirapolvere", "button": "Pulsanti", "number": "Numeri",
+    "select": "Selezioni", "device_tracker": "Posizione", "person": "Persone", "automation": "Automazioni",
+    "script": "Script", "scene": "Scene", "update": "Aggiornamenti", "event": "Eventi", "weather": "Meteo",
+    "water_heater": "Scaldacqua", "alarm_control_panel": "Allarmi", "siren": "Sirene", "valve": "Valvole",
+    "humidifier": "Umidificatori", "remote": "Telecomandi", "text": "Testi", "image": "Immagini",
+}
+ENTITY_ID = re.compile(r"[a-z0-9_]+\.[a-z0-9_]+")
+
+
+def issue_groups(issue):
+    """Elementi di un problema della diagnostica pronti da mostrare. Gli id delle entità
+    (sensor.iphone_di_maria_steps) diventano righe col nome leggibile e l'id sotto, raggruppate per tipo;
+    gli altri elementi (batterie, aggiornamenti…) restano righe di testo semplice."""
+    names = issue.get("names") or {}
+    groups, plain = {}, []
+    for item in issue.get("items") or []:
+        if ENTITY_ID.fullmatch(item):
+            domain, obj = item.split(".", 1)
+            name = names.get(item) or obj.replace("_", " ").strip().capitalize()
+            groups.setdefault(domain, []).append({"name": name, "id": item})
+        else:
+            plain.append({"name": item, "id": None})
+    out = [{"label": DOMAIN_LABELS.get(d, d.replace("_", " ").capitalize()), "rows": sorted(r, key=lambda x: x["name"].lower())}
+           for d, r in sorted(groups.items(), key=lambda kv: (-len(kv[1]), kv[0]))]
+    if plain:
+        out.append({"label": None, "rows": plain})
+    return out
+
+
+templates.env.globals["issue_groups"] = issue_groups
 
 
 def pw_mark(user):
@@ -231,6 +295,7 @@ def render(request, name, **ctx):
         csrf=csrf_token(request),
         company=co["name"] if co else SERVER_TITLE,
         usage=usage(co["id"]) if co else {},
+        notices_unread=notices_unread(co["id"]) if co else 0,
         brand_color=co["brand_color"] if co else DEFAULT_COLOR,
         public_url=public_url(request),
         flash=take_flash(request, ctx),
@@ -279,6 +344,7 @@ OWNERSHIP = {
     "uid": "SELECT 1 FROM users WHERE id = ? AND company_id = ?",
     "cmd": ("SELECT 1 FROM commands m JOIN plants p ON p.id = m.plant_id JOIN clients c ON c.id = p.client_id "
             "WHERE m.id = ? AND c.company_id = ?"),
+    "nid": "SELECT 1 FROM notices WHERE id = ? AND company_id = ?",
 }
 
 
@@ -316,7 +382,8 @@ def guard(permission="view"):
                 if request.url.path.endswith(".json"):
                     return JSONResponse({"error": "not found"}, status_code=404)
                 return render(request, "error.html", message="Non trovato.")
-            if user["must_change"] and request.url.path != "/account":
+            # chi è entrato col provider dell'azienda non ha usato la password iniziale
+            if user["must_change"] and not request.session.get("sso") and request.url.path != "/account":
                 return redirect("/account", "Prima di continuare scegli una password nuova, che conosci solo tu.", request)
             request.state.form = form
             request.state.user = user
@@ -376,17 +443,22 @@ async def setup(request: Request):
     return redirect("/", "Configurazione completata. Benvenuto!", request)
 
 
+def safe_next(next_url):
+    """Solo percorsi interni: niente "//sito", "/\\sito" o caratteri di controllo che i browser
+    potrebbero interpretare come un altro dominio."""
+    if (not isinstance(next_url, str) or not next_url.startswith("/") or next_url.startswith("//")
+            or "\\" in next_url or any(ord(ch) < 32 for ch in next_url)):
+        return "/"
+    return next_url
+
+
 async def login(request: Request):
     if not db.one("SELECT id FROM users LIMIT 1"):
         return redirect("/setup")
-    next_url = request.query_params.get("next", "/")
-    # Solo percorsi interni: niente "//sito", "/\\sito" o caratteri di controllo che i browser
-    # potrebbero interpretare come un altro dominio.
-    if (not next_url.startswith("/") or next_url.startswith("//") or "\\" in next_url
-            or any(ord(ch) < 32 for ch in next_url)):
-        next_url = "/"
+    next_url = safe_next(request.query_params.get("next", "/"))
     if request.method == "GET":
-        return render(request, "login.html", error=None, next=next_url, email_reset=accounts.email_enabled())
+        return render(request, "login.html", error=None, next=next_url, email_reset=accounts.email_enabled(),
+                      sso=_remembered_sso(request))
     form = await read_form(request)
     if form is None:
         return redirect("/login")
@@ -414,6 +486,219 @@ async def login(request: Request):
     if user["must_change"]:
         return redirect("/account", "Prima di continuare scegli una password nuova, che conosci solo tu.", request)
     return redirect(next_url)
+
+
+# ---------- accesso con il provider OpenID Connect dell'azienda (Authentik…) ----------
+
+SSO_COOKIE = "suite_sso"
+SSO_MAX_AGE = 10 * 60     # tempo per completare l'accesso sul provider
+
+
+def _remembered_sso(request):
+    """Pulsante del provider nella pagina di accesso: solo nel browser che ha già usato il link
+    dell'azienda (la pagina di accesso non elenca le aziende del server)."""
+    co = oidc.company_for_key(request.cookies.get(SSO_COOKIE))
+    if not co:
+        return None
+    return {"url": f"/accesso/{oidc.settings(co['id'])['oidc_key']}", "label": oidc.settings(co["id"])["label"],
+            "company": co["name"]}
+
+
+def _origin(url):
+    parts = urllib.parse.urlsplit(url)
+    return f"{parts.scheme}://{parts.netloc}" if parts.scheme in ("https", "http") and parts.netloc else None
+
+
+def _provider_origins(issuer):
+    """Origini a cui il pulsante «Collega» deve poter arrivare: quella della pagina di autorizzazione
+    del provider (dalla configurazione, in cache) e, se il provider non risponde, quella dell'issuer."""
+    if not oidc.valid_issuer(issuer):
+        return []
+    found = {_origin(issuer)}
+    try:
+        found.add(_origin(oidc.discover(issuer)["authorization_endpoint"]))
+    except oidc.OIDCError:
+        pass
+    return sorted(o for o in found if o and all(ch not in o for ch in " ;,'\""))
+
+
+# Codici d'errore del provider con il suggerimento per sistemarlo (il testo del provider non si mostra)
+PROVIDER_HINTS = {
+    "invalid_request": "nel provider attiva il tipo di autorizzazione «authorization_code» (in Authentik: "
+                       "Provider → Modifica → Impostazioni avanzate → Tipi di autorizzazione)",
+    "unauthorized_client": "nel provider attiva il tipo di autorizzazione «authorization_code»",
+    "invalid_scope": "nel provider lascia gli scope openid, email e profile",
+    "access_denied": "l'utente ha annullato, oppure nel provider non ha il permesso di usare l'applicazione",
+}
+
+
+def _provider_refused(label, code):
+    code = str(code)[:60]
+    hint = PROVIDER_HINTS.get(code)
+    return f"{label} non ha concesso l'accesso ({code})" + (f": {hint}." if hint else ".")
+
+
+def _sso_redirect_uri(request):
+    return public_url(request).rstrip("/") + oidc.CALLBACK_PATH
+
+
+def _sso_error(request, text, status=400):
+    if current_user(request):
+        # già dentro (con la password): niente modulo di accesso sotto il menu, l'errore va in «Il mio account»
+        return redirect("/account#sso", text, request, error=True)
+    resp = render(request, "login.html", error=text, next="/", email_reset=accounts.email_enabled(),
+                  sso=_remembered_sso(request))
+    resp.status_code = status
+    return resp
+
+
+async def sso_start(request: Request):
+    if not db.one("SELECT id FROM users LIMIT 1"):
+        return redirect("/setup")
+    key = request.path_params["key"]
+    co = oidc.company_for_key(key)
+    if not co:
+        return _sso_error(request, "Link d'accesso non valido, oppure l'accesso con il provider è disattivato.", 404)
+    try:
+        url, pending = await asyncio.to_thread(oidc.start, co["id"], _sso_redirect_uri(request))
+    except oidc.OIDCError as e:
+        log.warning("Accesso con il provider di %s non avviato: %s", co["name"], e)
+        return _sso_error(request, f"Accesso con {oidc.settings(co['id'])['label']} non disponibile: {e}.", 502)
+    pending["next"] = safe_next(request.query_params.get("next", "/"))[:300]
+    request.session["oidc"] = pending
+    resp = RedirectResponse(url, status_code=303)
+    resp.set_cookie(SSO_COOKIE, key, max_age=365 * 86400, httponly=True, samesite="lax",
+                    secure=os.environ.get("SECURE_COOKIES", "1") == "1")
+    return resp
+
+
+async def sso_callback(request: Request):
+    # Niente limite ai tentativi qui: con il provider non si indovina nessuna password, e un provider
+    # configurato male non deve bloccare il login con la password di tutto l'ufficio (stesso IP).
+    pending = request.session.pop("oidc", None)
+    q = request.query_params
+    if not isinstance(pending, dict) or not isinstance(q.get("state"), str) \
+            or not secrets.compare_digest(q.get("state"), pending.get("state", "")):
+        return _sso_error(request, "Accesso non riuscito: richiesta scaduta o aperta in un'altra finestra. Riprova.")
+    if time.time() - pending.get("t", 0) > SSO_MAX_AGE:
+        return _sso_error(request, "Accesso non riuscito: sono passati troppi minuti. Riprova.")
+    co = db.company(pending.get("co"))
+    if pending.get("link"):
+        return await _sso_link_callback(request, pending, co, q)
+    if not co or co["suspended_at"]:
+        return _sso_error(request, "L'accesso della tua azienda è sospeso: contatta il gestore del server.", 403)
+    label = oidc.settings(co["id"])["label"]
+    if q.get("error"):
+        # l'utente ha annullato, o il provider non gli permette l'applicazione
+        return _sso_error(request, _provider_refused(label, q.get("error")), 403)
+    try:
+        claims = await asyncio.to_thread(oidc.finish, pending, q.get("code"), _sso_redirect_uri(request))
+    except oidc.OIDCError as e:
+        log.warning("Accesso con il provider di %s non riuscito: %s", co["name"], e)
+        return _sso_error(request, f"Accesso con {label} non riuscito: {e}.", 502)
+    user, reason = oidc.find_user(co["id"], claims)
+    if not user:
+        log.info("Accesso con il provider di %s rifiutato: %s", co["name"], reason)
+        return _sso_error(request, f"Accesso con {label} rifiutato: {reason}.", 403)
+    log.info("Accesso di %s con il provider di %s", user["username"], co["name"])
+    request.session.clear()
+    request.session["uid"] = user["id"]
+    request.session["pw"] = pw_mark(user)
+    request.session["sso"] = co["id"]
+    return redirect(pending.get("next") or "/")
+
+
+@guard()
+async def sso_link_start(request: Request):
+    """«Il mio account»: chi è entrato con la password collega il proprio account del provider."""
+    user = request.state.user
+    co = user["company_id"]
+    if request.state.form.get("azione") == "scollega":
+        db.run("UPDATE users SET oidc_sub = NULL WHERE id = ?", user["id"])
+        return redirect("/account#sso", "Account scollegato dal provider.", request)
+    s = oidc.settings(co)
+    if not s["enabled"]:
+        return redirect("/account", "L'accesso con il provider non è attivo per la tua azienda.", request, error=True)
+    try:
+        url, pending = await asyncio.to_thread(oidc.start, co, _sso_redirect_uri(request))
+    except oidc.OIDCError as e:
+        return redirect("/account#sso", f"{s['label']} non disponibile: {e}.", request, error=True)
+    pending["link"] = user["id"]
+    request.session["oidc"] = pending
+    resp = RedirectResponse(url, status_code=303)
+    resp.set_cookie(SSO_COOKIE, s["oidc_key"], max_age=365 * 86400, httponly=True, samesite="lax",
+                    secure=os.environ.get("SECURE_COOKIES", "1") == "1")
+    return resp
+
+
+async def _sso_link_callback(request, pending, co, q):
+    user = current_user(request)
+    # stesso utente che ha avviato il collegamento, ancora collegato con la sua sessione
+    if not user or user["id"] != pending["link"] or not co or user["company_id"] != co["id"]:
+        return _sso_error(request, "Collegamento non riuscito: accedi di nuovo con la password e riprova.", 403)
+    label = oidc.settings(co["id"])["label"]
+    if q.get("error"):
+        return redirect("/account#sso", _provider_refused(label, q.get("error")), request, error=True)
+    try:
+        claims = await asyncio.to_thread(oidc.finish, pending, q.get("code"), _sso_redirect_uri(request))
+    except oidc.OIDCError as e:
+        return redirect("/account#sso", f"Collegamento con {label} non riuscito: {e}.", request, error=True)
+    if not oidc.link(user["id"], co["id"], claims["sub"]):
+        return redirect("/account#sso", f"Questo account di {label} è già collegato a un altro utente della dashboard.",
+                        request, error=True)
+    log.info("Utente %s collegato al provider di %s", user["username"], co["name"])
+    who = claims.get("preferred_username") or claims.get("email") or ""
+    return redirect("/account#sso", f"Collegato a {label}" + (f" come {str(who)[:80]}" if who else "") +
+                    f": d'ora in poi puoi entrare con «Accedi con {label}».", request)
+
+
+@guard("settings")
+async def sso_settings(request: Request):
+    """L'amministratore dell'azienda collega il proprio provider OpenID Connect."""
+    form = request.state.form
+    co = request.state.user["company_id"]
+    action = form.get("azione", "salva")
+    if action == "disattiva":
+        db.set_csetting(co, "oidc_enabled", "0")
+        return redirect("/impostazioni#sso", "Accesso con il provider disattivato: resta il login con la password.", request)
+    old = oidc.settings(co)
+    issuer = form.get("oidc_issuer", "").strip()
+    client_id = form.get("oidc_client_id", "").strip()[:200]
+    secret = form.get("oidc_client_secret", "")
+    if issuer and not oidc.valid_issuer(issuer):
+        return redirect("/impostazioni#sso", "Indirizzo del provider non valido: deve iniziare con https://", request, error=True)
+    if old["oidc_issuer"] and (issuer != old["oidc_issuer"] or client_id != old["oidc_client_id"]):
+        oidc.unlink_all(co)   # altro provider o altra applicazione: le identità vecchie non valgono più
+    db.set_csetting(co, "oidc_issuer", issuer)
+    db.set_csetting(co, "oidc_client_id", client_id)
+    if secret:
+        db.set_csetting(co, "oidc_client_secret", secret.strip()[:500])
+    db.set_csetting(co, "oidc_label", " ".join(form.get("oidc_label", "").split())[:40])
+    db.set_csetting(co, "oidc_auto_email", "1" if form.get("oidc_auto_email") == "1" else "0")
+    oidc.ensure_key(co)
+    enable = form.get("oidc_enabled") == "1"
+    if enable or action == "prova":
+        if not (issuer and client_id and db.get_csetting(co, "oidc_client_secret")):
+            db.set_csetting(co, "oidc_enabled", "0")
+            return redirect("/impostazioni#sso", "Servono indirizzo del provider, Client ID e Client secret.", request, error=True)
+        try:
+            await asyncio.to_thread(oidc.discover, issuer, True)
+        except oidc.OIDCError as e:
+            db.set_csetting(co, "oidc_enabled", "0")
+            return redirect("/impostazioni#sso", f"Provider non collegato: {e}.", request, error=True)
+    db.set_csetting(co, "oidc_enabled", "1" if enable else "0")
+    if action == "prova":
+        return redirect("/impostazioni#sso", "Il provider risponde e la configurazione è corretta." +
+                        ("" if enable else " Spunta «Attiva» e salva per usarlo."), request)
+    return redirect("/impostazioni#sso", "Accesso con il provider attivo: usa il link d'accesso qui sotto." if enable
+                    else "Impostazioni del provider salvate.", request)
+
+
+@guard("users")
+async def user_sso_unlink(request: Request):
+    uid = request.path_params["uid"]
+    db.run("UPDATE users SET oidc_sub = NULL WHERE id = ?", uid)
+    return redirect("/utenti", "Utente scollegato dal provider: per entrare di nuovo con il provider dovrà ricollegarsi.", request)
 
 
 # ---------- recupero della password ----------
@@ -632,6 +917,16 @@ LIMIT_MSG = {"clients": "Hai raggiunto il limite di {max_clients} clienti previs
                        "per aggiungerne altri elimina un impianto o chiedi al gestore di alzare il limite."}
 
 
+NOTICE_BADGE_DAYS = 30   # una comunicazione non letta smette di contare dopo un mese (impianti spenti, case vuote)
+
+
+def notices_unread(company_id):
+    """Comunicazioni dell'ultimo mese che almeno un cliente non ha ancora letto: numero nel menu."""
+    since = (datetime.now(timezone.utc) - timedelta(days=NOTICE_BADGE_DAYS)).isoformat(timespec="seconds")
+    return db.one("SELECT COUNT(DISTINCT n.id) AS c FROM notices n JOIN notice_plants np ON np.notice_id = n.id "
+                  "WHERE n.company_id = ? AND np.read_at IS NULL AND n.created_at > ?", company_id, since)["c"]
+
+
 def usage(company_id):
     """Clienti e impianti dell'azienda rispetto ai limiti (per pagine e messaggi)."""
     u = db.one("SELECT co.max_clients, co.max_plants, "
@@ -674,6 +969,8 @@ def _load_plant(pid):
         p["online"] = is_online(p)
         p["diag"] = sanitize.stored_diagnostics(p["last_diag"])
         p["admin"] = sanitize.admin_state(db.loads(p.get("admin_state"), None)) or {}
+        p["jobs"] = list(reversed(sanitize.jobs(db.loads(p.get("jobs"), []))))
+        p["job_running"] = next((j for j in p["jobs"] if j["status"] == "in_corso"), None)
     return p
 
 
@@ -687,8 +984,13 @@ async def plant_detail(request: Request):
     tickets = db.all_("SELECT * FROM tickets WHERE plant_id = ? ORDER BY updated_at DESC LIMIT 20", plant["id"])
     # La password dell'accesso amministratore si mostra solo a chi può usarla (non al ruolo lettura)
     admin_secret = secrets_store.get(plant["id"]) if can(request.state.user, "edit") else None
+    co = request.state.user["company_id"]
     return render(request, "plant_detail.html", plant=plant, commands=commands, tickets=tickets, admin_secret=admin_secret,
-                  now_ts=time.time())
+                  now_ts=time.time(), company_offline=notify.company_offline_minutes(co),
+                  offline_range=(notify.OFFLINE_MIN, notify.OFFLINE_MAX), telegram_on=notify.configured(co),
+                  notices=db.all_("SELECT n.id, n.title, n.created_at, np.delivered_at, np.read_at, np.read_by FROM notice_plants np "
+                                  "JOIN notices n ON n.id = np.notice_id WHERE np.plant_id = ? ORDER BY n.id DESC LIMIT 5",
+                                  plant["id"]))
 
 
 @guard()
@@ -705,7 +1007,8 @@ async def plant_state_json(request: Request):
 def admin_key(plant):
     """Riassunto dello stato amministratore: se cambia, la pagina dell'impianto si ricarica da sola."""
     a = plant.get("admin") or {}
-    return f'{a.get("active")}|{a.get("until")}|{a.get("username")}|{plant.get("admin_requested_at")}|{a.get("declined")}'
+    jobs = "".join(f'{j["id"]}{j["status"]}{j.get("message")}' for j in plant.get("jobs") or [])
+    return f'{a.get("active")}|{a.get("until")}|{a.get("username")}|{plant.get("admin_requested_at")}|{a.get("declined")}|{jobs}'
 
 
 templates.env.globals["admin_key"] = admin_key
@@ -740,6 +1043,22 @@ async def plant_rename(request: Request):
     return redirect(f"/impianti/{pid}", "Nome dell'impianto aggiornato.", request)
 
 
+@guard("edit")
+async def plant_offline(request: Request):
+    """Minuti senza contatto prima dell'avviso «offline» per questo impianto (vuoto = quelli dell'azienda)."""
+    pid = request.path_params["pid"]
+    raw = request.state.form.get("offline_minutes", "").strip()
+    if not raw:
+        db.run("UPDATE plants SET offline_minutes = NULL WHERE id = ?", pid)
+        return redirect(f"/impianti/{pid}#offline", "Avviso offline: torna il valore dell'azienda.", request)
+    minutes = notify.parse_minutes(raw)
+    if minutes is None:
+        return redirect(f"/impianti/{pid}#offline", f"Scrivi un numero di minuti tra {notify.OFFLINE_MIN} e {notify.OFFLINE_MAX}, "
+                        "oppure lascia vuoto.", request, error=True)
+    db.run("UPDATE plants SET offline_minutes = ? WHERE id = ?", minutes, pid)
+    return redirect(f"/impianti/{pid}#offline", f"Avviso offline dopo {notify.fmt_minutes(minutes)} senza contatto.", request)
+
+
 @guard("settings")
 async def plant_delete(request: Request):
     pid = request.path_params["pid"]
@@ -767,6 +1086,45 @@ async def plant_command(request: Request):
            plant["id"], name, request.state.user["id"], db.now())
     ring(plant["id"])
     return redirect(f"/impianti/{pid}", f"Comando «{ALLOWED_COMMANDS[name]}» inviato.", request)
+
+
+# ---------- backup e aggiornamenti ----------
+
+@guard("commands")
+async def plant_maintenance(request: Request):
+    """Backup completo o installazione di un aggiornamento, eseguiti dall'agente in background.
+    Servono l'accesso remoto del cliente e un agente che li conosce; prima di aggiornare l'agente fa un backup."""
+    pid = request.path_params["pid"]
+    plant = _load_plant(pid)
+    if not plant or not plant["paired_at"] or plant["revoked"]:
+        return render(request, "error.html", message="Impianto non trovato o non collegato.")
+    back = f"/impianti/{pid}#manutenzione"
+    if not remote_access(plant):
+        return redirect(back, "Il cliente ha sospeso l'accesso remoto: operazione non inviata.", request, error=True)
+    if plant["diag"].get("backups") is None:
+        return redirect(back, "Serve l'agente 0.1.9 o successivo sull'impianto.", request, error=True)
+    if plant["job_running"]:
+        return redirect(back, f"C'è già un'operazione in corso: {plant['job_running']['title']}.", request, error=True)
+    if db.one("SELECT 1 FROM commands WHERE plant_id = ? AND name IN ('create_backup', 'install_update') "
+              "AND status IN ('in_attesa', 'inviato')", pid):
+        return redirect(back, "C'è già un'operazione in attesa dell'agente.", request, error=True)
+    op = request.state.form.get("op")
+    args = {"by": person_name(request.state.user)}
+    if op == "backup":
+        name, msg = "create_backup", "Backup completo avviato: l'agente lo crea in Home Assistant."
+    elif op == "aggiorna":
+        eid = request.state.form.get("entity_id", "")
+        upd = next((u for u in plant["diag"].get("updates_list") or [] if u["entity_id"] == eid and u["installable"]), None)
+        if not upd:
+            return redirect(back, "Aggiornamento non disponibile: aggiorna la diagnostica e riprova.", request, error=True)
+        args["entity_id"] = eid
+        name, msg = "install_update", f"Aggiornamento di {upd['title']} avviato: prima viene fatto un backup completo."
+    else:
+        return render(request, "error.html", message="Operazione non valida.")
+    db.run("INSERT INTO commands(plant_id, name, args, created_by, created_at) VALUES(?, ?, ?, ?, ?)",
+           plant["id"], name, json.dumps(args), request.state.user["id"], db.now())
+    ring(plant["id"])
+    return redirect(back, msg, request)
 
 
 # ---------- accesso amministratore temporaneo ----------
@@ -874,6 +1232,90 @@ async def ticket_reply(request: Request):
     return redirect(f"/ticket/{tid}", "Ticket aggiornato.", request)
 
 
+# ---------- comunicazioni ai clienti ----------
+# L'installatore scrive una comunicazione (novità, manutenzione programmata, nuove funzioni…) a uno o
+# più impianti: il cliente la vede nel pannello Assistenza di Home Assistant e riceve una notifica.
+
+NOTICE_TITLE_MAX, NOTICE_TEXT_MAX = 120, 2000
+
+
+def _notice_targets(company_id):
+    """Impianti collegati dell'azienda, raggruppati per cliente: tra questi si scelgono i destinatari."""
+    rows = db.all_("SELECT p.id, p.name, c.id AS client_id, c.name AS client_name FROM plants p "
+                   "JOIN clients c ON c.id = p.client_id WHERE c.company_id = ? AND p.paired_at IS NOT NULL "
+                   "AND p.revoked = 0 ORDER BY c.name, p.name", company_id)
+    groups = []
+    for r in rows:
+        if not groups or groups[-1]["client_id"] != r["client_id"]:
+            groups.append({"client_id": r["client_id"], "client_name": r["client_name"], "plants": []})
+        groups[-1]["plants"].append(r)
+    return groups
+
+
+def _notices_render(request, errors=None, form_data=None):
+    co = request.state.user["company_id"]
+    notices = db.all_("SELECT n.*, COUNT(np.plant_id) AS targets, COUNT(np.delivered_at) AS delivered, COUNT(np.read_at) AS read "
+                      "FROM notices n LEFT JOIN notice_plants np ON np.notice_id = n.id WHERE n.company_id = ? "
+                      "GROUP BY n.id ORDER BY n.id DESC LIMIT 100", co)
+    for n in notices:
+        n["plants"] = db.all_("SELECT p.id, p.name, c.name AS client_name, np.delivered_at, np.read_at, np.read_by FROM notice_plants np "
+                              "JOIN plants p ON p.id = np.plant_id JOIN clients c ON c.id = p.client_id "
+                              "WHERE np.notice_id = ? ORDER BY c.name, p.name", n["id"])
+    selected = set()
+    pre = request.query_params.get("impianto", "")
+    if form_data is not None:
+        selected = {int(v) for v in form_data.getlist("plant") if v.isdigit()}
+    elif pre.isdigit():
+        selected = {int(pre)}
+    return render(request, "notices.html", notices=notices, targets=_notice_targets(co), selected=selected,
+                  errors=errors or [], form=form_data, limits=(NOTICE_TITLE_MAX, NOTICE_TEXT_MAX))
+
+
+@guard()
+async def notices_page(request: Request):
+    if request.method == "GET":
+        return _notices_render(request)
+    user = request.state.user
+    if not can(user, "edit"):
+        return render(request, "error.html", message="Non hai i permessi per questa operazione.")
+    form = request.state.form
+    title = " ".join(form.get("title", "").split())
+    text = form.get("text", "").replace("\r\n", "\n").strip()
+    valid = {p["id"] for g in _notice_targets(user["company_id"]) for p in g["plants"]}
+    if form.get("tutti") == "1":
+        chosen = valid
+    else:
+        chosen = {int(v) for v in form.getlist("plant") if v.isdigit()} & valid
+    errors = []
+    if not title:
+        errors.append("Scrivi il titolo della comunicazione.")
+    elif len(title) > NOTICE_TITLE_MAX:
+        errors.append(f"Il titolo può avere al massimo {NOTICE_TITLE_MAX} caratteri.")
+    if not text:
+        errors.append("Scrivi il testo della comunicazione.")
+    elif len(text) > NOTICE_TEXT_MAX:
+        errors.append(f"Il testo può avere al massimo {NOTICE_TEXT_MAX} caratteri.")
+    if not chosen:
+        errors.append("Scegli almeno un impianto a cui mandarla.")
+    if errors:
+        return _notices_render(request, errors, form)
+    ts = db.now()
+    with db.connect() as c:
+        nid = c.execute("INSERT INTO notices(company_id, title, text, author_name, created_by, created_at) VALUES(?, ?, ?, ?, ?, ?)",
+                        (user["company_id"], title, text, person_name(user), user["id"], ts)).lastrowid
+        c.executemany("INSERT INTO notice_plants(notice_id, plant_id) VALUES(?, ?)", [(nid, pid) for pid in sorted(chosen)])
+    n = len(chosen)
+    return redirect("/comunicazioni", f"Comunicazione inviata a {n} {'impianto' if n == 1 else 'impianti'}: "
+                    "i clienti la vedono nel pannello Assistenza entro un minuto.", request)
+
+
+@guard("edit")
+async def notice_delete(request: Request):
+    nid = request.path_params["nid"]
+    db.run("DELETE FROM notices WHERE id = ?", nid)
+    return redirect("/comunicazioni", "Comunicazione eliminata: sparisce anche dal pannello dei clienti.", request)
+
+
 # ---------- utenti e impostazioni (solo amministratore) ----------
 
 @guard("users")
@@ -942,7 +1384,13 @@ async def account_page(request: Request):
             request.session["pw"] = pw_mark(db.one("SELECT password_hash FROM users WHERE id = ?", user["id"]))
             return redirect("/", "Password cambiata.", request) if user["must_change"] else \
                 redirect("/account", "Password cambiata.", request)
-    return render(request, "account.html", errors=errors)
+    s = oidc.settings(user["company_id"]) if user.get("company_id") else None
+    resp = render(request, "account.html", errors=errors, sso=s if s and s["enabled"] else None)
+    if s and s["enabled"]:
+        origins = await asyncio.to_thread(_provider_origins, s["oidc_issuer"])
+        if origins:
+            resp.headers["Content-Security-Policy"] = csp(origins)
+    return resp
 
 
 @guard("users")
@@ -996,8 +1444,20 @@ async def settings_page(request: Request):
                   tg_token_set=bool(db.get_csetting(co, "telegram_token")),
                   tg_chat_id=db.get_csetting(co, "telegram_chat_id", ""),
                   tg_events={k: (label, db.get_csetting(co, k, "1") == "1") for k, label in notify.EVENTS.items()},
+                  offline_minutes=notify.company_offline_minutes(co),
+                  offline_range=(notify.OFFLINE_MIN, notify.OFFLINE_MAX),
                   upd=_update_status(co) if can(user, "server") else None,
+                  sso=_sso_settings(request, co),
                   mail=_mail_settings() if can(user, "server") else None)
+
+
+def _sso_settings(request, co):
+    s = oidc.settings(co)
+    s["secret_set"] = bool(s.pop("oidc_client_secret"))
+    s["redirect_uri"] = _sso_redirect_uri(request)
+    s["login_url"] = public_url(request).rstrip("/") + f"/accesso/{s['oidc_key']}" if s["oidc_key"] else None
+    s["linked"] = db.one("SELECT COUNT(*) AS n FROM users WHERE company_id = ? AND oidc_sub IS NOT NULL", co)["n"]
+    return s
 
 
 def _mail_settings():
@@ -1111,6 +1571,12 @@ async def telegram_settings(request: Request):
         db.set_csetting(co, "telegram_chat_id", chat_id)
     for key in notify.EVENTS:
         db.set_csetting(co, key, "1" if form.get(key) == "1" else "0")
+    if "offline_minutes" in form:
+        minutes = notify.parse_minutes(form.get("offline_minutes"))
+        if minutes is None:
+            return redirect("/impostazioni#telegram", f"Minuti dell'avviso offline: scrivi un numero tra {notify.OFFLINE_MIN} "
+                            f"e {notify.OFFLINE_MAX}.", request, error=True)
+        db.set_csetting(co, "offline_minutes", str(minutes))
     if action == "prova":
         if not notify.configured(co):
             return redirect("/impostazioni#telegram", "Servono sia il token del bot sia il chat ID.", request, error=True)
@@ -1292,6 +1758,8 @@ routes = [
     Route("/login", login, methods=["GET", "POST"]),
     Route("/logout", logout, methods=["POST"]),
     Route("/recupero", reset_request, methods=["GET", "POST"]),
+    Route(oidc.CALLBACK_PATH, sso_callback),
+    Route("/accesso/{key}", sso_start),
     Route("/recupero/{token}", reset_use, methods=["GET", "POST"]),
     Route("/", dashboard),
     Route("/clienti", clients_list),
@@ -1306,12 +1774,16 @@ routes = [
     Route("/impianti/{pid:int}/nome", plant_rename, methods=["POST"]),
     Route("/impianti/{pid:int}/amministratore", plant_admin, methods=["POST"]),
     Route("/impianti/{pid:int}/elimina", plant_delete, methods=["POST"]),
+    Route("/impianti/{pid:int}/offline", plant_offline, methods=["POST"]),
+    Route("/impianti/{pid:int}/manutenzione", plant_maintenance, methods=["POST"]),
     Route("/clienti/{cid:int}/elimina", client_delete, methods=["POST"]),
     Route("/impianti/{pid:int}/comandi", plant_command, methods=["POST"]),
     Route("/comandi/{cmd:int}.json", command_detail),
     Route("/ticket", tickets_list),
     Route("/ticket/{tid:int}", ticket_detail),
     Route("/ticket/{tid:int}/rispondi", ticket_reply, methods=["POST"]),
+    Route("/comunicazioni", notices_page, methods=["GET", "POST"]),
+    Route("/comunicazioni/{nid:int}/elimina", notice_delete, methods=["POST"]),
     Route("/utenti", users_page, methods=["GET", "POST"]),
     Route("/utenti/{uid:int}/attiva", user_toggle, methods=["POST"]),
     Route("/utenti/{uid:int}/recupero", user_reset_link, methods=["POST"]),
@@ -1325,5 +1797,8 @@ routes = [
     Route("/impostazioni/telegram", telegram_settings, methods=["POST"]),
     Route("/impostazioni/aggiornamenti", update_check, methods=["POST"]),
     Route("/impostazioni/email", email_settings, methods=["POST"]),
+    Route("/impostazioni/accesso", sso_settings, methods=["POST"]),
+    Route("/utenti/{uid:int}/scollega", user_sso_unlink, methods=["POST"]),
+    Route("/account/accesso", sso_link_start, methods=["POST"]),
     Route("/impianti/{pid:int}/ha-url", plant_ha_url, methods=["POST"]),
 ]

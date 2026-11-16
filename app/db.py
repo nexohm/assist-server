@@ -174,6 +174,45 @@ MIGRATIONS = [
     );
     CREATE INDEX idx_password_resets_user ON password_resets(user_id);
     """,
+    # 9 — accesso con il provider OpenID Connect dell'azienda (Authentik…): identità del provider
+    #     legata all'utente al primo accesso. Le impostazioni del provider stanno in company_settings.
+    """
+    ALTER TABLE users ADD COLUMN oidc_sub TEXT;
+    CREATE UNIQUE INDEX idx_users_oidc ON users(company_id, oidc_sub) WHERE oidc_sub IS NOT NULL;
+    """,
+    # 10 — minuti senza contatto prima dell'avviso «offline» scelti per impianto (vuoto = quelli
+    #      dell'azienda); utente di Home Assistant che ha aperto la richiesta; avvisi scritti
+    #      dall'installatore ai clienti, con l'elenco degli impianti che li ricevono.
+    """
+    ALTER TABLE plants ADD COLUMN offline_minutes INTEGER;
+    ALTER TABLE tickets ADD COLUMN opened_by TEXT;
+    ALTER TABLE tickets ADD COLUMN opened_by_id TEXT;
+    CREATE TABLE notices (
+        id INTEGER PRIMARY KEY,
+        company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+        title TEXT NOT NULL,
+        text TEXT NOT NULL,
+        author_name TEXT,
+        created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        created_at TEXT NOT NULL
+    );
+    CREATE TABLE notice_plants (
+        notice_id INTEGER NOT NULL REFERENCES notices(id) ON DELETE CASCADE,
+        plant_id INTEGER NOT NULL REFERENCES plants(id) ON DELETE CASCADE,
+        delivered_at TEXT,
+        PRIMARY KEY (notice_id, plant_id)
+    );
+    CREATE INDEX idx_notices_company ON notices(company_id);
+    CREATE INDEX idx_notice_plants_plant ON notice_plants(plant_id);
+    """,
+    # 11 — conferma di lettura delle comunicazioni (quando e da quale utente di Home Assistant sono
+    #      state viste la prima volta nel pannello Assistenza); backup e aggiornamenti avviati
+    #      dall'installatore, con lo stato comunicato dall'agente
+    """
+    ALTER TABLE notice_plants ADD COLUMN read_at TEXT;
+    ALTER TABLE notice_plants ADD COLUMN read_by TEXT;
+    ALTER TABLE plants ADD COLUMN jobs TEXT;
+    """,
 ]
 
 

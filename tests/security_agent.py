@@ -52,10 +52,14 @@ class Evil(BaseHTTPRequestHandler):
             return self._json({"commands": []})
         if self.path.startswith("/api/agent/commands"):
             self.send_response(302); self.send_header("Location", f"http://localhost:{PORT}/steal"); self.end_headers(); return
+        if self.path.startswith("/api/agent/notices"):
+            return self._json({"key": "1-1", "notices": [{"id": 1, "title": EVIL, "text": EVIL + "\n<script>alert(1)</script>",
+                                                         "author_name": EVIL, "created_at": EVIL}, "stringa", {"id": "x"}]})
         if self.path.startswith("/api/agent/tickets"):
             if mode["tickets"] == "broken":
                 return self._json({"tickets": [{"id": 1, "title": "x"}, "stringa", {"messages": [None]}]})
-            return self._json({"tickets": [{
+            return self._json({"tickets": [{"id": 7, "title": EVIL, "status": "aperto", "opened_by": EVIL, "opened_by_id": "b" * 32,
+                                            "messages": [{"author_type": "cliente", "author_name": EVIL, "text": EVIL}]}, {
                 "id": EVIL, "title": EVIL, "status": EVIL, "created_at": EVIL, "updated_at": EVIL,
                 "messages": [{"author_type": EVIL, "author_name": EVIL, "text": EVIL, "created_at": EVIL}]}]})
         self._json({"error": "?"}, 404)
@@ -87,19 +91,67 @@ agent.state.update(last_diag={"status": EVIL, "collected_at": EVIL, "issues": [{
 panel = Panel(agent, 0)
 
 # ---------------------------------------------------------------- XSS nel pannello
-html = panel.page()
+# Vista dell'amministratore di casa (vede tutto) e di un utente normale, con comunicazioni ostili
+ADMIN = {"id": "a" * 32, "name": EVIL, "admin": True}
+USER = {"id": "b" * 32, "name": EVIL, "admin": False}
+try:
+    agent.check_notices("1-1")
+except Exception as e:  # noqa: BLE001
+    print("check_notices:", e)
+html = "".join(panel.page(sec, u) for sec in ("richieste", "impianto", "preferenze") for u in (ADMIN, USER))
+check("Comunicazioni di" in html and "aperta da" in html, "pannello: comunicazioni e nomi degli utenti mostrati (base del controllo XSS)")
 raw = [frag for frag in ("<img src=x", "<script>alert") if frag in html]
 check(not raw, "pannello: dati di un server ostile non possono eseguire codice nell'Home Assistant del cliente",
       "trovato nel pannello: " + ", ".join(raw))
 
 mode["tickets"] = "broken"
 try:
-    html = panel.page()
-    crashed = "Le tue richieste" not in html
+    html = panel.page("", ADMIN)
+    crashed = "Richieste di casa" not in html
 except Exception as e:  # noqa: BLE001
     crashed = f"{type(e).__name__}: {e}"
 check(not crashed, "pannello: risposte malformate del server non lo mandano in errore", str(crashed))
 mode["tickets"] = "evil"
+
+# ---------------------------------------------------------------- utenti non amministratori
+before = json.dumps(agent.state.snapshot().get("excluded"))
+results_user = [panel.handle(a, f, {}, USER) for a, f in (("escludi", {"entity": "light.x"}), ("consenso", {"enabled": "0"}),
+                                                          ("admin", {"op": "consenti", "durata": "sempre"}),
+                                                          ("notifiche", {"ha": "0"}), ("etichette", {"reset": "1"}))]
+check(all(isinstance(r, tuple) and r[1] for r in results_user) and json.dumps(agent.state.snapshot().get("excluded")) == before
+      and agent.state.consent_active() and not agent.admin.active(),
+      "pannello: un utente non amministratore non può cambiare impostazioni, consenso o accesso amministratore")
+check(panel.handle("escludi", {"entity": "light.x"}, {}, None)[1], "pannello: senza utente riconosciuto vale come non amministratore")
+orig_users = link_mod  # segnaposto per leggibilità
+from agent import ha as ha_mod  # noqa: E402
+def broken_users():
+    raise ha_mod.HAError("HA non risponde")
+saved = ha_mod.users
+ha_mod.users = broken_users
+agent._users = None
+u = agent.panel_user("a" * 32, "Roberta")
+ha_mod.users = saved
+check(u["admin"] is False, "pannello: se Home Assistant non dice chi è amministratore, vista ridotta", str(u))
+check(agent.panel_user("../../etc", "x")["id"] is None and agent.panel_user(None)["admin"] is False,
+      "pannello: id utente non valido ignorato")
+
+# ---------------------------------------------------------------- backup e aggiornamenti dal server
+agent.state.set_consent(False)
+r_noconsent = agent.execute({"id": 901, "name": "create_backup", "args": {}})
+agent.state.set_consent(True)
+r_bad = [agent.execute({"id": 902 + i, "name": "install_update", "args": {"entity_id": e}})
+         for i, e in enumerate(["light.cucina", "update.x; rm -rf /", "", None, "update." + "a" * 300])]
+check(r_noconsent[0] is False and all(r[0] is False for r in r_bad) and not agent.jobs.list(),
+      "agente: backup e aggiornamenti rifiutati senza accesso remoto o con un'entità non valida")
+started = []
+agent.jobs._run = lambda job: started.append(job["id"])   # niente Home Assistant vero: si controlla solo l'avvio
+r1 = agent.execute({"id": 950, "name": "create_backup", "args": {"by": EVIL}})
+r2 = agent.execute({"id": 950, "name": "create_backup", "args": {}})
+r3 = agent.execute({"id": 951, "name": "create_backup", "args": {}})
+time.sleep(0.2)
+check(r1[0] and r2[0] and r3[0] is False and started == [950] and len(agent.jobs.status()[0]["by"] or "") <= 60,
+      "agente: un comando rispedito non avvia una seconda operazione, una alla volta, nome del tecnico accorciato")
+agent.state.update(jobs=[])
 
 # ---------------------------------------------------------------- reindirizzamenti
 try:
@@ -161,8 +213,10 @@ check(agent.state.get("excluded") == before, "pannello: un altro sito non può e
 # Testo deciso dal server che finisce nelle notifiche di Home Assistant (Markdown): niente link né immagini
 from agent.main import Agent as _Agent  # noqa: E402
 dirty = _Agent._plain("Aggiorna [qui](https://evil.example) ![t](https://evil.example/pixel.png) <img src=x onerror=alert(1)>")
-check("](" not in dirty.replace("\\]\\(", "") and "<img" not in dirty and "\\[qui\\]" in dirty,
-      "notifiche: link e immagini inviati dal server non diventano cliccabili in Home Assistant", dirty)
+bell = _Agent._md(dirty)
+check("](" not in dirty and "<img" not in dirty and "qui (https://evil.example)" in dirty and "\\" not in dirty
+      and "](" not in bell and "\\(" in bell,
+      "notifiche: link e immagini inviati dal server non diventano link nascosti (indirizzo in vista, senza barre sul telefono)", dirty)
 
 # Nome di entità da escludere: solo dominio.nome (niente caratteri che finirebbero in HTML o nei filtri)
 import re as _re  # noqa: E402
@@ -286,7 +340,7 @@ try:
         calls.append(1)
         raise _SE(423, "assistenza sospesa")
     agent.link.tickets = suspended_tickets
-    html_s = panel.page()
+    html_s = panel.page("", ADMIN)
     agent.link.tickets = orig_tickets
     check(agent.state.get("token") == "t" and agent.state.get("connection") == "sospeso" and not adm.active()
           and not fake_users and "Assistenza sospesa" in html_s and len(calls) <= 2,

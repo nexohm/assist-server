@@ -27,6 +27,40 @@ EVENTS = {
     "notify_critical": "Impianto in stato critico",
 }
 
+# Minuti senza contatto prima dell'avviso «offline»: valore dell'azienda, che ogni impianto può cambiare.
+OFFLINE_DEFAULT = 3
+OFFLINE_MIN, OFFLINE_MAX = 3, 1440
+
+
+def parse_minutes(value):
+    """Minuti scritti in un modulo: numero intero tra OFFLINE_MIN e OFFLINE_MAX, altrimenti None."""
+    value = (value or "").strip() if isinstance(value, str) else ""
+    if not value.isdigit():
+        return None
+    n = int(value)
+    return n if OFFLINE_MIN <= n <= OFFLINE_MAX else None
+
+
+def company_offline_minutes(company_id):
+    try:
+        n = int(db.get_csetting(company_id, "offline_minutes", OFFLINE_DEFAULT))
+    except (TypeError, ValueError):
+        return OFFLINE_DEFAULT
+    return n if OFFLINE_MIN <= n <= OFFLINE_MAX else OFFLINE_DEFAULT
+
+
+def offline_minutes(plant, company_id):
+    """Soglia dell'avviso per un impianto: la sua, se l'ha, altrimenti quella dell'azienda."""
+    n = plant.get("offline_minutes")
+    return n if isinstance(n, int) and OFFLINE_MIN <= n <= OFFLINE_MAX else company_offline_minutes(company_id)
+
+
+def fmt_minutes(n):
+    if n >= 60 and n % 60 == 0:
+        h = n // 60
+        return "1 ora" if h == 1 else f"{h} ore"
+    return "1 minuto" if n == 1 else f"{n} minuti"
+
 
 def configured(company_id):
     return bool(db.get_csetting(company_id, "telegram_token") and db.get_csetting(company_id, "telegram_chat_id"))
@@ -111,24 +145,28 @@ def _company_id(plant_id):
     return row["company_id"] if row else None
 
 
-def new_ticket(ticket_id, plant_id, title, description):
+def new_ticket(ticket_id, plant_id, title, description, author=None):
     excerpt = (description or "").strip()
     excerpt = esc(excerpt[:300] + ("…" if len(excerpt) > 300 else ""))
     send(_company_id(plant_id), "notify_tickets", f"🎫 <b>Nuovo ticket</b> — {plant_label(plant_id)}\n<b>{esc(title)}</b>"
+                           + (f"\nAperto da {esc(author)}" if author else "")
                            + (f"\n{excerpt}" if excerpt else "") + link(f"/ticket/{ticket_id}"))
 
 
-def client_reply(ticket_id, plant_id, title, text):
+def client_reply(ticket_id, plant_id, title, text, author=None):
     excerpt = esc(text[:300] + ("…" if len(text) > 300 else ""))
-    send(_company_id(plant_id), "notify_tickets", f"💬 <b>Risposta del cliente</b> — {plant_label(plant_id)}\nTicket: {esc(title)}\n{excerpt}"
+    who = f" ({esc(author)})" if author else ""
+    send(_company_id(plant_id), "notify_tickets", f"💬 <b>Risposta del cliente</b>{who} — {plant_label(plant_id)}\nTicket: {esc(title)}\n{excerpt}"
                            + link(f"/ticket/{ticket_id}"))
 
 
 # ---------------------------------------------------------------- controllo periodico
 
 def check_plants():
-    """Confronta lo stato attuale con quello già notificato e avvisa solo sui cambiamenti."""
-    from .agent_api import is_online  # import locale: evita dipendenze circolari
+    """Confronta lo stato attuale con quello già notificato e avvisa solo sui cambiamenti.
+    L'avviso «offline» parte dopo i minuti scelti (dell'impianto o dell'azienda); quello «di nuovo
+    online» solo dopo un avviso offline, appena l'agente torna in contatto."""
+    from .agent_api import is_online, seen_within  # import locale: evita dipendenze circolari
 
     plants = db.all_("SELECT p.*, c.company_id FROM plants p JOIN clients c ON c.id = p.client_id "
                      "JOIN companies co ON co.id = c.company_id "
@@ -140,14 +178,18 @@ def check_plants():
         status = diag.get("status") if online else None
         label = plant_label(p["id"])
 
-        if p.get("alert_online") is None:
-            pass  # primo controllo: memorizziamo lo stato senza avvisare
-        elif online != p["alert_online"]:
-            if online:
-                send(co, "notify_offline", f"🟢 <b>Di nuovo online</b> — {label}" + link(f"/impianti/{p['id']}"))
-            else:
-                send(co, "notify_offline", f"🔴 <b>Impianto offline</b> — {label}\nNessun contatto da più di 3 minuti."
-                                       + link(f"/impianti/{p['id']}"))
+        alert = p.get("alert_online")
+        if alert is None:
+            alert = online  # primo controllo: memorizziamo lo stato senza avvisare
+        elif alert == 1:
+            minutes = offline_minutes(p, co)
+            if not seen_within(p, minutes):
+                alert = 0
+                send(co, "notify_offline", f"🔴 <b>Impianto offline</b> — {label}\nNessun contatto da più di "
+                                       f"{fmt_minutes(minutes)}." + link(f"/impianti/{p['id']}"))
+        elif online:
+            alert = 1
+            send(co, "notify_offline", f"🟢 <b>Di nuovo online</b> — {label}" + link(f"/impianti/{p['id']}"))
 
         prev_status = p.get("alert_status")
         if online and status == "critico" and prev_status != "critico":
@@ -158,8 +200,8 @@ def check_plants():
             send(co, "notify_critical", f"✅ <b>Rientrato dallo stato critico</b> — {label}" + link(f"/impianti/{p['id']}"))
 
         new_status = status if online else prev_status
-        if p.get("alert_online") != online or prev_status != new_status:
-            db.run("UPDATE plants SET alert_online = ?, alert_status = ? WHERE id = ?", online, new_status, p["id"])
+        if p.get("alert_online") != alert or prev_status != new_status:
+            db.run("UPDATE plants SET alert_online = ?, alert_status = ? WHERE id = ?", alert, new_status, p["id"])
 
 
 async def watcher():

@@ -39,11 +39,12 @@ The user interface (dashboard and customer panel) is currently in **Italian**.
 8. [Several companies on one server](#several-companies-on-one-server)
 9. [Telegram notifications](#telegram-notifications)
 10. [Forgotten passwords and email](#forgotten-passwords-and-email)
-11. [Temporary administrator access](#temporary-administrator-access)
-12. [Day-to-day management: the `ha-suite` command](#day-to-day-management-the-ha-suite-command)
-13. [Updates, backup and restore](#updates-backup-and-restore)
-14. [Security and privacy](#security-and-privacy)
-15. [Development, testing and releases](#development-testing-and-releases)
+11. [Signing in with Authentik (OpenID Connect)](#signing-in-with-authentik-openid-connect)
+12. [Temporary administrator access](#temporary-administrator-access)
+13. [Day-to-day management: the `ha-suite` command](#day-to-day-management-the-ha-suite-command)
+14. [Updates, backup and restore](#updates-backup-and-restore)
+15. [Security and privacy](#security-and-privacy)
+16. [Development, testing and releases](#development-testing-and-releases)
 
 ---
 
@@ -73,16 +74,28 @@ HTTPS. The agent only runs a closed list of commands and cannot change the confi
 - **Customers and systems**: contact details, rename and delete (by retyping the name), pairing code with a
   *Copy* button, revoke and re-pair, link to the customer's Home Assistant.
 - **Diagnostics**: unavailable or orphaned entities, low batteries, pending updates, disabled automations, disk
-  space, age of the last backup.
+  space, age of the last backup. Entities are listed by type, with their name and id.
 - **Remote commands**: on-demand diagnostics and ping, with history.
-- **Tickets**: customer requests with diagnostics attached, replies, status and assignment to a technician.
+- **Backups and updates** from the system page: existing backups (also on NAS and cloud), automatic backup status,
+  "back up now" and installation of updates (Home Assistant, operating system, Supervisor, add-ons, integrations and
+  firmware). Only with remote access on; before every update the agent makes a full backup and the customer gets a
+  notification.
+- **Tickets**: customer requests with diagnostics attached, replies, status and assignment to a technician; shows
+  which Home Assistant user opened the request.
+- **Announcements** to customers (news, planned maintenance, new features): to one, several or all systems, with
+  delivery and read confirmation; the customer reads them in the Support panel and gets a notification, and 30
+  minutes after being read they disappear from the panel.
 - **Temporary administrator access** to the customer's Home Assistant, only if the customer grants it.
 - **Users** with roles (administrator, technician, read-only) and **several companies** on one server.
-- **Telegram notifications**: new tickets, replies, systems offline or critical.
+- **Sign-in with Authentik** or another OpenID Connect provider, chosen by each company (besides passwords).
+- **Telegram notifications**: new tickets, replies, systems offline or critical; the minutes before the offline
+  alert are chosen per company and per system.
 - **Update notices** for the server and the agents; animated confirmations on every save.
 
 **Customer's Support panel** (in the add-on, see [`nexohm/ha-addons`](https://github.com/nexohm/ha-addons))
 - **Requests**, **System** and **Preferences** tabs;
+- visible to every user of the house: non-administrators open requests and see only their own;
+- installer **announcements** at the top of the page;
 - support requests and replies, with notifications in Home Assistant or on the phone;
 - **time-limited remote access** (1 hour, 4 hours, 24 hours, 7 days or no expiry) and one-click suspension;
 - **excluded entities** (wildcards allowed) or checking only entities with given **labels**;
@@ -131,7 +144,8 @@ curl -fsSL .../install.sh | sudo MODE=proxy SUITE_PORT=8086 bash          # exis
 ```
 
 The configuration lives in `/opt/ha-suite/.env` (see [`.env.example`](.env.example)); after a change run
-`sudo ha-suite riavvia`.
+`sudo ha-suite riavvia`. Dashboard dates use the **Europe/Rome** time zone; for another one add e.g.
+`TZ=Europe/Zurich` to the `.env` file.
 
 ## First start
 
@@ -201,6 +215,10 @@ on Telegram. In **Impostazioni → Notifiche Telegram**:
 3. open your bot, press **Start**, then **Rileva chat ID** (Detect chat ID);
 4. **Invia prova** (Send test).
 
+In the same section choose after how many minutes without contact the **offline** alert is sent (default 3, up to
+24 hours). A system with an unstable connection can have its own value: change it on its page, under
+*Notifica offline*.
+
 ## Forgotten passwords and email
 
 Recovery always works through a **one-time link** (valid for 30 minutes, usable once) that lets the user choose a
@@ -225,6 +243,32 @@ Tips:
 - the server **checks the mail login every day** and **every 30 days** sends a check email to the manager, so keys
   that expire when unused (Brevo, for instance, after 90 days) stay active;
 - if something stops working the manager sees a warning in the dashboard and, with Telegram set up, gets a message.
+
+## Signing in with Authentik (OpenID Connect)
+
+Each company can let its users sign in with their account on its own **OpenID Connect** provider: Authentik, but
+also Keycloak, Zitadel, Authelia and similar. It is an extra option: username and password login always stays
+available, even if the provider is down. The provider does not create users or decide roles: only existing users
+of the company can sign in, with the role they have in the dashboard.
+
+**In Authentik**
+1. **Applications → Create with wizard**, provider **OAuth2/OpenID**, client type **Confidential**.
+2. Redirect URI (*Strict* mode): `https://<server-address>/accesso/callback` — ready to copy in
+   **Impostazioni → Accesso con Authentik**.
+3. Pick a **signing key** and keep the `openid`, `email`, `profile` scopes.
+
+**In the dashboard** (company administrator): **Impostazioni → Accesso con Authentik**, paste the application's
+*OpenID Configuration Issuer* (e.g. `https://auth.yourdomain.com/application/o/assistenza/`), Client ID and Client
+secret, press **Prova collegamento**, tick **Attiva** and save. The **company sign-in link** (`/accesso/<code>`)
+appears, to send to your technicians: the login page does not list the companies on the server, and the "Accedi con
+Authentik" button shows up in browsers that have already used that link.
+
+**Linking users.** Each user signs in once with their password and presses **Collega Authentik** in
+**Il mio account**: this proves that the dashboard user and the Authentik user are the same person. Alternatively the
+administrator can enable **automatic linking by email**: only do so if Authentik users cannot change their own email
+(the default user settings flow allows it), otherwise a technician could set an administrator's email and sign in in
+their place. After the first sign-in the Authentik identity counts, not the email. A user can be unlinked from
+**Utenti**; changing provider or application resets all links.
 
 ## Temporary administrator access
 

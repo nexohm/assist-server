@@ -42,7 +42,18 @@
   <ul class="issues">
     {% for i in d.issues %}
     <li><span class="badge s-{{ i.severity }}">{{ i.severity }}</span> {{ i.message }}
-      {% if i.get('items') %}<details><summary class="small">{% set n = i.get('items') | length %}{{ n }} {{ 'elemento' if n == 1 else 'elementi' }}</summary><p class="items">{{ i.get('items') | join(', ') }}</p></details>{% endif %}
+      {% if i.get('items') %}{% set groups = issue_groups(i) %}{% set ids = groups | selectattr('label') | map(attribute='rows') | sum(start=[]) | map(attribute='id') | list %}
+      <details class="items"><summary class="small">{% set n = i.get('items') | length %}{{ n }} {{ 'elemento' if n == 1 else 'elementi' }}</summary>
+        <div class="items-box">
+          {% for g in groups %}
+          {% if g.label and groups | length > 1 %}<p class="items-group">{{ g.label }} <span class="count">{{ g.rows | length }}</span></p>{% endif %}
+          <ul class="items-list">
+            {% for r in g.rows %}<li>{% if r.id %}<span class="item-name">{{ r.name }}</span><code class="item-id">{{ r.id }}</code>{% else %}<span class="item-name">{{ r.name }}</span>{% endif %}</li>{% endfor %}
+          </ul>
+          {% endfor %}
+        </div>
+        {% if ids %}<button type="button" class="link-btn copy small" data-copy="{{ ids | join('\n') }}">Copia gli id delle entità</button>{% endif %}
+      </details>{% endif %}
     </li>
     {% endfor %}
   </ul>
