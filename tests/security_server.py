@@ -278,10 +278,10 @@ db.execute("UPDATE commands SET status = 'errore' WHERE name IN ('create_backup'
 requests.post(BASE + "/api/agent/report", headers=agent_headers(ta), json={"consent": True, "jobs": []})
 
 broken = []
-for diag in ({"issues": ["solo una stringa"]}, {"collected_at": 12345, "system": {"last_backup": 99}},
-             {"summary": "x", "system": [1, 2], "issues": {"a": 1}}, {"issues": [{"items": 5}]}):
+for n, diag in enumerate(({"issues": ["solo una stringa"]}, {"collected_at": 12345, "system": {"last_backup": 99}},
+                          {"summary": "x", "system": [1, 2], "issues": {"a": 1}}, {"issues": [{"items": 5}]})):
     requests.post(BASE + "/api/agent/report", headers=agent_headers(ta), json={"consent": True, "diagnostics": diag})
-    requests.post(BASE + "/api/agent/tickets", headers=agent_headers(ta), json={"title": "diag rotta", "diagnostics": diag})
+    requests.post(BASE + "/api/agent/tickets", headers=agent_headers(ta), json={"title": f"diag rotta {n}", "diagnostics": diag})
     tid = db.execute("SELECT id FROM tickets ORDER BY id DESC").fetchone()[0]
     for p in ("/", f"/impianti/{pa}", f"/ticket/{tid}"):
         try:
@@ -436,6 +436,22 @@ row_u = db.execute("SELECT opened_by, opened_by_id FROM tickets WHERE id = ?", (
 page_v = admin.get(BASE + f"/ticket/{tid_v}").text
 check(row_u == (None, None) and "<img src=x" not in page_v and "&lt;img src=x" in page_v,
       "ticket: utente di HA con id non valido ignorato, nome mostrato come testo")
+# doppio invio: due richieste uguali insieme (doppio tocco) aprono un ticket solo; se cambia qualcosa è un ticket nuovo
+same_body = {"title": "doppio invio", "description": "uguale", "user": {"id": "c" * 32, "name": "Gino"}}
+got_ids = []
+dup_threads = [threading.Thread(target=lambda: got_ids.append(requests.post(
+    BASE + "/api/agent/tickets", headers=agent_headers(ta), json=same_body).json().get("ticket_id"))) for _ in range(4)]
+[th.start() for th in dup_threads]; [th.join() for th in dup_threads]
+other = requests.post(BASE + "/api/agent/tickets", headers=agent_headers(ta), json={**same_body, "description": "diversa"}).json()
+other_b = requests.post(BASE + "/api/agent/tickets", headers=agent_headers(tb), json=same_body).json()
+check(len(set(got_ids)) == 1 and None not in got_ids
+      and db.execute("SELECT COUNT(*) FROM tickets WHERE title = 'doppio invio'").fetchone()[0] == 3
+      and other["ticket_id"] not in got_ids and other_b["ticket_id"] not in got_ids,
+      "ticket: lo stesso invio ripetuto non crea doppioni, uno diverso o di un altro impianto sì")
+for _ in range(3):
+    requests.post(BASE + f"/api/agent/tickets/{got_ids[0]}/messages", headers=agent_headers(ta), json={"text": "ripetuto", "user": same_body["user"]})
+check(db.execute("SELECT COUNT(*) FROM ticket_messages WHERE ticket_id = ? AND text = 'ripetuto'", (got_ids[0],)).fetchone()[0] == 1,
+      "ticket: lo stesso messaggio inviato più volte arriva una volta sola")
 
 # solo il gestore: elenco delle aziende, indirizzo pubblico e aggiornamenti del server
 check(refused(bia, "/aziende", "/", {"name": "Terza", "username": "terzo", "password": "passwordlunga1"}),

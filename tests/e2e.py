@@ -157,6 +157,10 @@ try:
     check(panel.status_code == 200 and "Rossi Impianti" in panel.text and "Collegato" in panel.text, "pannello cliente con marchio installatore")
     r = panel_post("ticket", {"title": "Tapparella soggiorno ferma", "description": "Da ieri non sale più", "contact": "333 9998877"})
     check("Richiesta inviata" in r.text, "cliente apre un ticket dal pannello")
+    # doppio invio dello stesso modulo (doppio tocco, app che ripete la richiesta): resta un ticket solo
+    r = panel_post("ticket", {"title": "Tapparella soggiorno ferma", "description": "Da ieri non sale più", "contact": "333 9998877"})
+    check("Richiesta inviata" in r.text and db.execute("SELECT COUNT(*) FROM tickets WHERE plant_id=?", (pid,)).fetchone()[0] == 1,
+          "lo stesso modulo inviato due volte apre un ticket solo")
     t = db.execute("SELECT * FROM tickets WHERE plant_id=?", (pid,)).fetchone()
     check(t and t["diagnostics"] and t["contact"] == "333 9998877", "ticket arrivato con diagnostica allegata")
     tp = web.get(BASE + f"/ticket/{t['id']}").text
@@ -165,6 +169,9 @@ try:
     panel = requests.get(PANEL).text
     check("Passo domani mattina" in panel and "In lavorazione" in panel, "il cliente vede risposta e stato nel pannello")
     panel_post("rispondi", {"tid": t["id"], "text": "Perfetto grazie"})
+    panel_post("rispondi", {"tid": t["id"], "text": "Perfetto grazie"})
+    check(db.execute("SELECT COUNT(*) FROM ticket_messages WHERE ticket_id=? AND text='Perfetto grazie'", (t["id"],)).fetchone()[0] == 1,
+          "la stessa risposta inviata due volte arriva una volta sola")
     check("Perfetto grazie" in web.get(BASE + f"/ticket/{t['id']}").text, "risposta del cliente arriva in dashboard")
     # notifiche al cliente: la risposta dell'installatore arriva nella campanella di HA
     check(wait_for(lambda: any(c["domain"] == "persistent_notification" and "Passo domani mattina" in c["data"].get("message", "")
