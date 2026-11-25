@@ -38,6 +38,13 @@ def error(status, message):
 
 
 MAX_TICKETS_PER_DAY = 20  # protezione da un agente che apre ticket a raffica
+# Stessa richiesta (o stesso messaggio) arrivata di nuovo entro questi secondi: è un doppio invio
+# (doppio tocco su «Invia», pagina ricaricata, app di HA che ripete il modulo) e non ne creiamo un'altra.
+DUPLICATE_SECONDS = 120
+
+
+def _recent_ts():
+    return (datetime.now(timezone.utc) - timedelta(seconds=DUPLICATE_SECONDS)).isoformat(timespec="seconds")
 
 
 class BadRequest(Exception):
@@ -288,9 +295,19 @@ async def tickets(request: Request):
         diagnostics = sanitize.diagnostics(data.get("diagnostics")) if plant["consent"] else None
         # utente di Home Assistant che apre la richiesta (anche non amministratore): lo vede l'installatore
         user_id, user_name = sanitize.ha_user(data.get("user"))
+        contact = sanitize.text(data.get("contact"), 200)
+        # Controllo e inserimento senza await in mezzo: due invii contemporanei non passano entrambi.
+        same = db.one("SELECT t.id FROM tickets t WHERE t.plant_id = ? AND t.title = ? AND t.created_at >= ? "
+                      "AND COALESCE(t.opened_by_id, '') = ? AND COALESCE(t.contact, '') = ? "
+                      "AND COALESCE((SELECT m.text FROM ticket_messages m WHERE m.ticket_id = t.id "
+                      "AND m.author_type = 'cliente' ORDER BY m.id LIMIT 1), '') = ? "
+                      "ORDER BY t.id DESC LIMIT 1",
+                      plant["id"], title, _recent_ts(), user_id or "", contact or "", description or "")
+        if same:
+            return JSONResponse({"ticket_id": same["id"], "duplicate": True})
         ts = db.now()
         tid = db.run("INSERT INTO tickets(plant_id, title, contact, diagnostics, opened_by, opened_by_id, created_at, updated_at) "
-                     "VALUES(?, ?, ?, ?, ?, ?, ?, ?)", plant["id"], title, sanitize.text(data.get("contact"), 200),
+                     "VALUES(?, ?, ?, ?, ?, ?, ?, ?)", plant["id"], title, contact,
                      json.dumps(diagnostics) if diagnostics else None, user_name, user_id, ts, ts)
         if description:
             db.run("INSERT INTO ticket_messages(ticket_id, author_type, author_name, text, created_at) "
@@ -324,6 +341,9 @@ async def ticket_message(request: Request):
     if not text:
         return error(400, "messaggio vuoto")
     _, user_name = sanitize.ha_user(data.get("user"))
+    if db.one("SELECT id FROM ticket_messages WHERE ticket_id = ? AND author_type = 'cliente' AND author_name = ? "
+              "AND text = ? AND created_at >= ?", ticket["id"], user_name or "Cliente", text, _recent_ts()):
+        return JSONResponse({"ok": True, "duplicate": True})
     ts = db.now()
     db.run("INSERT INTO ticket_messages(ticket_id, author_type, author_name, text, created_at) "
            "VALUES(?, 'cliente', ?, ?, ?)", ticket["id"], user_name or "Cliente", text, ts)
